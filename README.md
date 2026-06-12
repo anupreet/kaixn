@@ -50,7 +50,7 @@ before any LLM runs); the LLM only adjudicates the semantic cases.
 - `docs/bootstrap.md` — mining an existing product's principles into the
   constitution on day one.
 
-## Design principles (carried from an OpenJarvis teardown)
+## Design principles 
 
 - **Atomic records** — one claim per norm, one change per operation; checkable.
 - **No write-only memory** — every record sits on a defined read path.
