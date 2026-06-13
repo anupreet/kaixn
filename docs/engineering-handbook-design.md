@@ -13,6 +13,29 @@ entries are produced by three extractor types (**deterministic**, **LLM-semantic
 
 ---
 
+## 0. Value proposition & altitude (what we bring)
+
+Two principles govern what belongs in the catalog:
+
+**Rigor for free.** The catalog is a *pre-built, industry-standard* body of
+engineering rigor. Point kaixn at any repo and it inherits that rigor immediately —
+the team does **not** author the standards. The codified concepts ARE the product's
+contribution: "you don't need to define this — it's industry standard."
+
+**Altitude: design & architecture, not lint.** We play *above* the language layer.
+Three tiers, by altitude:
+
+| Tier | Examples | Who owns it |
+|---|---|---|
+| **Architecture & design patterns (CORE — the moat)** | layering, seams/interfaces, dependency-injection, error-architecture, data-access patterns, concurrency model, state-management (append-only/immutability), idempotency, resource lifecycle, trust boundaries, domain patterns (LLM-output validation, prompt-injection boundaries) | **kaixn** — language-agnostic, durable, conceptual |
+| **Engineering discipline (process)** | commit/PR hygiene, review etiquette, testing strategy, docs, security practices | kaixn — agnostic, valuable |
+| **Language / lint (DELEGATED)** | naming, formatting, type-hints, ruff/mypy rules | **the coding agent + linters** — table stakes, referenced not differentiated |
+
+The pivot: **tilt the catalog toward the architecture/design tier**; treat the
+language tier as delegated. Coding agents handle syntax; kaixn governs the concepts
+that were designed. (This is why guideline mining drops C-isms and Python lint
+trivia — they're the delegated tier, not our value.)
+
 ## 1. The axis model (the core idea)
 
 We do **not** scan for a list of named conventions — that's open-ended and unstable.

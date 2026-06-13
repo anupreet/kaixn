@@ -192,3 +192,76 @@ fallback_shape:
 # Generation-grade axes are the per-PR gate's mechanical checklist. invariant axes
 # COMPILE to the gate (mypy-strict config + ruff selection + custom checks + tests);
 # convention axes remain LLM/human judgment.
+
+# === eval-discovered axes (round 1) ===
+eval_discovered_round1:
+  - {id: warning-stacklevel,  rule: "warnings.warn must set stacklevel so the emitted warning points at the user's call site, not at internal framework/library frames (e.g. account for Pydantic model_validator and BaseModel.__init__ frames)", enforce: "human", enforceable: convention}
+
+# === guideline-derived axes: portable subset (curated from torvalds/linux) ===
+# Python-focus curation: kept the language-agnostic engineering standards (commit/PR
+# hygiene, logging/diagnostics discipline, review etiquette, docs, AI-contribution
+# policy) + the 3 axes mapping to REAL linter rules. Dropped ~57 LKML/email/C-kernel
+# specifics (DCO sign-off & trailer formats, Fixes:/Link:/lore.kernel.org mechanics,
+# email patch/reply etiquette, C namespacing/refcount/locking-primitives, switch
+# fall-through). Enforcement honesty: only ruff/mypy-mapped axes are `invariant`;
+# scriptable-but-unbuilt checks are `enforce: planned:<name>` / `convention`.
+guideline_portable:
+  # --- code clarity / source hygiene ---
+  - {id: expression-simplicity,   rule: "Prefer simple, explicit expressions; avoid clever constructs that obscure intent", enforce: "human", enforceable: convention}
+  - {id: string-greppability,     rule: "Keep user-visible/log strings on a single source line so messages stay greppable", enforce: "planned:no-split-strings", enforceable: convention}
+  - {id: magic-numbers,           rule: "No unexplained literal numeric constants; use a named constant or enum member", enforce: "ruff:PLR2004", enforceable: invariant}
+  - {id: line-length,             rule: "Lines kept within a soft max width; prefer extracting helpers over deep line-wrapping", enforce: "ruff:E501", enforceable: invariant}
+  - {id: comment-placement,       rule: "Freestanding comments on their own line above the code, not trailing tail comments", enforce: "human", enforceable: convention}
+  - {id: name-descriptiveness,    rule: "Identifiers convey intent well enough to reduce the need for explanatory comments", enforce: "human", enforceable: convention}
+  - {id: understand-before-change, rule: "Understand how existing code works before modifying it", enforce: "human", enforceable: convention}
+  # --- correctness / concurrency (portable) ---
+  - {id: locking-rules-documented, rule: "Document the concurrency invariants / locking rules for shared mutable state", enforce: "human", enforceable: convention}
+  - {id: regression-avoidance,    rule: "Changes must not break existing users; never fix a bug by introducing another", enforce: "human", enforceable: convention}
+  - {id: new-public-interface-rigor, rule: "New public/user-facing interfaces need design, docs, and wide review before merge", enforce: "human", enforceable: convention}
+  # --- diagnostics / logging / messages ---
+  - {id: message-spelling,        rule: "Log/diagnostic/user-facing messages are correctly spelled", enforce: "planned:spellcheck-messages", enforceable: convention}
+  - {id: message-clarity,         rule: "Log/diagnostic messages are concise, clear, and unambiguous", enforce: "human", enforceable: convention}
+  - {id: log-verbosity,           rule: "Quiet during normal operation; routine status at debug level, higher severities for real problems", enforce: "human", enforceable: convention}
+  - {id: no-redundant-error-logging, rule: "No redundant failure message when the failing call already logs the failure", enforce: "human", enforceable: convention}
+  - {id: diagnostic-severity-fit, rule: "Loud diagnostics (warn/assert) only for genuinely unexpected conditions, never expected states", enforce: "human", enforceable: convention}
+  # --- commit / PR description content ---
+  - {id: commit-problem-statement, rule: "Every commit/PR states the underlying problem and why it is worth fixing", enforce: "human", enforceable: convention}
+  - {id: commit-impact-description, rule: "Every commit/PR states the user-visible impact, not just code-level details", enforce: "human", enforceable: convention}
+  - {id: commit-claim-evidence,   rule: "Performance/optimization claims cite measured numbers", enforce: "human", enforceable: convention}
+  - {id: commit-tradeoff-disclosure, rule: "Descriptions state the non-obvious costs/trade-offs of a change", enforce: "human", enforceable: convention}
+  - {id: commit-msg-descriptive,  rule: "Describe what the change does in technical detail and plain English so reviewers can verify", enforce: "human", enforceable: convention}
+  - {id: commit-self-contained,   rule: "Each (re)submission carries a complete, self-contained description; no reliance on prior versions", enforce: "human", enforceable: convention}
+  - {id: commit-changelog-rationale, rule: "The commit message explains WHY the change is worth applying, not just what it does", enforce: "human", enforceable: convention}
+  - {id: change-justification,    rule: "Every change, especially new features, justifies why it is needed", enforce: "human", enforceable: convention}
+  - {id: changelog-testing,       rule: "Description reports the testing performed and its results", enforce: "human", enforceable: convention}
+  - {id: changelog-structure,     rule: "Commit bodies are structured context -> problem -> solution, not one undivided block", enforce: "human", enforceable: convention}
+  - {id: durable-references,      rule: "Reference durable/archived copies of external docs, not fragile URLs that rot", enforce: "human", enforceable: convention}
+  # --- commit subject / format (scriptable, not yet built) ---
+  - {id: commit-imperative-mood,  rule: "Commit subject and description use the imperative mood ('make X do Y')", enforce: "planned:commit-msg-lint", enforceable: convention}
+  - {id: commit-subject-capitalization, rule: "Commit subject begins with an uppercase letter", enforce: "planned:commit-msg-lint", enforceable: convention}
+  - {id: commit-ref-format,       rule: "References to a prior commit include both the SHA and its summary line", enforce: "planned:commit-msg-lint", enforceable: convention}
+  # --- patch / PR structure ---
+  - {id: commit-atomicity,        rule: "Split changes into small, self-contained, individually-reviewable commits/PRs", enforce: "human", enforceable: convention}
+  - {id: patch-atomicity-logical, rule: "Each logical change is separate (split bug fixes from optimizations, API changes from features)", enforce: "human", enforceable: convention}
+  - {id: patch-cohesion,          rule: "A single logical change spanning many files stays in one commit/PR, not split", enforce: "human", enforceable: convention}
+  - {id: patch-independence,      rule: "Each commit/PR is independently justifiable and verifiable on its own merits", enforce: "human", enforceable: convention}
+  - {id: patch-dependency-note,   rule: "When a change depends on another, state the dependency in the description", enforce: "human", enforceable: convention}
+  - {id: pr-series-size,          rule: "Keep a PR small enough to review in one sitting", enforce: "human", enforceable: convention}
+  - {id: history-curation,        rule: "Present a clean final history; no intermediate trial-and-error commits in submissions", enforce: "human", enforceable: convention}
+  - {id: no-wip-submission,       rule: "Do not submit unfinished/WIP changes intending to fix them later", enforce: "human", enforceable: convention}
+  - {id: commit-bisectability,    rule: "Every commit builds and runs so history stays bisectable", enforce: "planned:per-commit-build", enforceable: convention}
+  - {id: pure-move-change,        rule: "A change that relocates code does not also modify it; behavior changes go separately", enforce: "planned:pure-move-diff", enforceable: convention}
+  # --- review / communication ---
+  - {id: review-comment-response, rule: "Every reviewer comment is addressed or explicitly answered; none silently ignored", enforce: "human", enforceable: convention}
+  - {id: review-no-change-rationale, rule: "A review comment producing no change is answered with the reason why", enforce: "human", enforceable: convention}
+  - {id: revision-changelog,      rule: "Each new revision notes what changed from the prior one and re-notifies reviewers", enforce: "human", enforceable: convention}
+  # --- security / docs / tooling ---
+  - {id: security-disclosure-process, rule: "Security-sensitive fixes go through responsible disclosure, not public channels", enforce: "human", enforceable: convention}
+  - {id: build-warnings-clean,    rule: "Code produces zero linter/type warnings; fix the warning rather than ignore it", enforce: "ruff + mypy-strict", enforceable: invariant}
+  - {id: pre-submit-validation,   rule: "Non-trivial changes are built and exercised end-to-end before submission", enforce: "human", enforceable: convention}
+  - {id: feature-docs,            rule: "Every new feature ships user-facing documentation on how to use it", enforce: "human", enforceable: convention}
+  - {id: interface-doc-sync,      rule: "Changes to user-facing interfaces update the corresponding docs", enforce: "human", enforceable: convention}
+  # --- AI-assisted contribution policy ---
+  - {id: ai-contribution-process, rule: "AI-assisted contributions follow the same process, style, and review as human ones", enforce: "human", enforceable: convention}
+  - {id: ai-code-human-review,    rule: "A human reviews all AI-generated code before submission", enforce: "human", enforceable: convention}
+  - {id: contribution-accountability, rule: "A named human takes full responsibility for each contribution regardless of tooling", enforce: "human", enforceable: convention}
