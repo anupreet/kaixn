@@ -364,7 +364,8 @@ Resources:
       Priority: 10
       Conditions:
         - Field: host-header
-          HostHeaderConfig: { Values: [!Ref ApexDomain] }
+          HostHeaderConfig:
+            Values: !If [HasWww, [!Ref ApexDomain, !Ref WwwDomain], [!Ref ApexDomain]]
       Actions:
         - Type: redirect
           RedirectConfig:
@@ -382,7 +383,8 @@ Resources:
       Priority: 10
       Conditions:
         - Field: host-header
-          HostHeaderConfig: { Values: [!Ref ApexDomain] }
+          HostHeaderConfig:
+            Values: !If [HasWww, [!Ref ApexDomain, !Ref WwwDomain], [!Ref ApexDomain]]
       Actions:
         - Type: redirect
           RedirectConfig:

@@ -19,3 +19,9 @@ venv/
 # Local deploy secret
 deploy/.db_password.local
 deploy/.secrets.local
+
+# Transient build/deploy logs
+deploy/*.log
+
+# Local waitlist capture (offline mode)
+waitlist.jsonl

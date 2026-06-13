@@ -10,10 +10,12 @@ review — the full loop, end to end.
 
 from __future__ import annotations
 
+import os
 import pathlib
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -26,12 +28,27 @@ try:
 except ImportError:
     pass
 
-from kaixn import playbook
+from kaixn import playbook, waitlist
 from kaixn.app import Kaixn
 
 _STATIC = pathlib.Path(__file__).parent / "static"
 
 app = FastAPI(title="kaixn", description="Review the plan, not the PR.")
+
+# The marketing site posts waitlist signups cross-origin (kaixn.com ->
+# app.kaixn.com), so allow those origins for the AJAX path. Override/extend with
+# KAIXN_CORS_ORIGINS (comma-separated) if domains change.
+_DEFAULT_ORIGINS = [
+    "https://kaixn.com", "https://www.kaixn.com", "https://kaixn.webflow.io",
+]
+_cors = os.getenv("KAIXN_CORS_ORIGINS")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in _cors.split(",")] if _cors else _DEFAULT_ORIGINS,
+    allow_methods=["POST", "GET", "OPTIONS"],
+    allow_headers=["*"],
+)
+
 _service: Kaixn | None = None
 
 
@@ -142,6 +159,49 @@ def playbook_endpoint(body: PlaybookBody) -> dict:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+# -- waitlist (public marketing site posts here) -----------------------------
+class WaitlistBody(BaseModel):
+    email: str
+    source: str = "marketing"
+
+
+@app.post("/api/waitlist", response_model=None)
+async def join_waitlist(request: Request) -> dict | RedirectResponse:
+    """Capture a marketing-site signup.
+
+    Accepts JSON (AJAX fetch from the site) or form-encoded (native form POST).
+    JSON → returns {ok, email}; form post → 303-redirects to a thank-you so the
+    browser lands somewhere sensible after a full-page submit.
+    """
+    ctype = request.headers.get("content-type", "")
+    is_form = ctype.startswith("application/x-www-form-urlencoded")
+    if is_form:
+        # Parse urlencoded from the raw body — avoids a python-multipart dep.
+        # (Webflow custom-action forms submit as urlencoded.)
+        from urllib.parse import parse_qs
+
+        body = (await request.body()).decode("utf-8", "replace")
+        email = (parse_qs(body).get("email", [""]) or [""])[0]
+    else:
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        email = str(data.get("email", ""))
+    source = "marketing"
+
+    try:
+        result = waitlist.add(email, source=source)
+    except ValueError as e:
+        if is_form:
+            return RedirectResponse("https://kaixn.com/?waitlist=invalid", status_code=303)
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    if is_form:
+        return RedirectResponse("https://kaixn.com/?waitlist=ok", status_code=303)
+    return result
 
 
 # -- UI ----------------------------------------------------------------------

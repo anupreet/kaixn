@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>kaixn — Agents write the code. You govern the decisions.</title>
+<meta name="description" content="kaixn turns your team's architecture and product decisions into a living source of truth — mined from your code, governed by your team, and read by your agents."/>
+<meta property="og:title" content="kaixn — Agents write the code. You govern the decisions."/>
+<meta property="og:description" content="A living source of truth for engineering and product decisions: mined from your code, governed by your team, read by your agents."/>
+<meta property="og:type" content="website"/>
+<meta name="theme-color" content="#f4f0e8"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet"/>
+<style>
+:root{
+  --paper:#f4f0e8; --surface:#ece6da; --ink:#211c16; --ink-soft:#6b6256;
+  --hairline:#d8d0c1; --clay:#a9633f; --clay-soft:#e7d6c7;
+  --font-display:"Fraunces",Georgia,"Times New Roman",serif;
+  --font-body:"Inter",-apple-system,system-ui,"Helvetica Neue",sans-serif;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0;background-color:var(--paper);color:var(--ink);
+  font-family:var(--font-body);font-size:18px;line-height:1.6;
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+}
+a{color:inherit}
+.container{width:100%;max-width:1140px;margin:0 auto;padding:0 32px}
+.eyebrow{text-transform:uppercase;letter-spacing:.2em;font-size:12px;color:var(--clay);font-weight:500}
+
+/* nav */
+.nav{border-bottom:1px solid var(--hairline);position:sticky;top:0;background-color:rgba(244,240,232,.88);backdrop-filter:blur(8px);z-index:20}
+.nav-inner{display:flex;align-items:center;justify-content:space-between;padding:22px 0}
+.nav-brand{display:inline-flex;align-items:center;gap:10px;text-decoration:none}
+.nav-brand img{height:30px;width:30px;display:block}
+.nav-brand span{font-family:var(--font-display);font-weight:600;font-size:25px;letter-spacing:-.01em;color:var(--ink)}
+.nav-right{display:flex;align-items:center;gap:34px}
+.nav-link{color:var(--ink);text-decoration:none;font-size:15px}
+.nav-link:hover{color:var(--clay)}
+
+/* buttons */
+.btn{display:inline-block;background-color:var(--ink);color:var(--paper);text-decoration:none;border-radius:3px;font-size:15px;padding:12px 22px;border:1px solid var(--ink);transition:background-color .15s,border-color .15s}
+.btn:hover{background-color:var(--clay);border-color:var(--clay)}
+.btn-sm{padding:10px 18px;font-size:14px}
+.btn-lg{padding:16px 30px;font-size:16px}
+.btn-ghost{background-color:transparent;color:var(--ink);border:1px solid var(--hairline)}
+.btn-ghost:hover{background-color:transparent;border-color:var(--ink);color:var(--ink)}
+
+/* hero */
+.hero{text-align:center;padding:88px 0 112px;position:relative}
+.hero-inner{display:flex;flex-direction:column;align-items:center}
+.hero-enso{width:128px;height:128px;margin-bottom:30px;opacity:.92}
+.hero-title{font-family:var(--font-display);font-weight:400;font-size:66px;line-height:1.07;letter-spacing:-.02em;margin:20px 0 0}
+.hero-sub{font-size:20px;line-height:1.55;color:var(--ink-soft);max-width:600px;margin:26px 0 0}
+.hero-cta{display:flex;gap:16px;margin-top:40px}
+
+/* sections */
+.section{padding:104px 0;border-top:1px solid var(--hairline)}
+.section-head{max-width:760px}
+.section-title{font-family:var(--font-display);font-weight:400;font-size:42px;line-height:1.1;letter-spacing:-.02em;margin:14px 0 0}
+.lead{font-size:19px;line-height:1.55;color:var(--ink-soft);max-width:620px;margin:20px 0 0}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:56px;margin-top:48px}
+.col-p{font-size:20px;line-height:1.55;color:var(--ink-soft);margin:0}
+.col-p em{font-style:italic;color:var(--clay)}
+
+/* surfaces cards */
+.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;margin-top:54px}
+.card{background-color:var(--surface);border:1px solid var(--hairline);border-radius:6px;padding:34px 30px;display:flex;flex-direction:column}
+.card-eyebrow{text-transform:uppercase;letter-spacing:.16em;font-size:11px;font-weight:600;color:var(--clay)}
+.card-title{font-family:var(--font-display);font-weight:400;font-size:23px;line-height:1.2;letter-spacing:-.01em;margin:16px 0 0}
+.card-body{font-size:16px;line-height:1.55;color:var(--ink-soft);margin:12px 0 0}
+
+/* loop */
+.loop{display:flex;align-items:stretch;gap:14px;margin-top:52px;flex-wrap:wrap}
+.step{flex:1 1 150px;background-color:var(--surface);border:1px solid var(--hairline);border-radius:6px;padding:22px 20px}
+.step-num{font-size:12px;letter-spacing:.16em;color:var(--clay);font-weight:600}
+.step-name{font-family:var(--font-display);font-weight:400;font-size:19px;line-height:1.2;margin-top:8px}
+.loop-arrow{display:flex;align-items:center;color:var(--clay);font-size:20px}
+.loop-caption{font-size:16px;color:var(--ink-soft);margin-top:26px;max-width:560px}
+
+/* rigor */
+.rigor-grid{display:grid;grid-template-columns:1fr 1fr;gap:56px;align-items:start}
+.rigor-list{list-style:none;margin:0;padding:0;border-top:1px solid var(--hairline)}
+.rigor-item{font-size:18px;line-height:1.5;color:var(--ink);padding:22px 0 22px 30px;border-bottom:1px solid var(--hairline);position:relative}
+.rigor-item:before{content:"";position:absolute;left:0;top:30px;width:9px;height:9px;border-radius:50%;background-color:var(--clay)}
+
+/* what it's not */
+.not-list{margin-top:48px;border-top:1px solid var(--hairline)}
+.not-row{display:grid;grid-template-columns:300px 1fr;gap:40px;padding:30px 0;border-bottom:1px solid var(--hairline)}
+.not-h{font-family:var(--font-display);font-weight:400;font-size:24px;letter-spacing:-.01em}
+.not-p{font-size:18px;line-height:1.55;color:var(--ink-soft)}
+
+/* cta */
+.cta{background-color:var(--ink);text-align:center;padding:112px 0}
+.cta-inner{display:flex;flex-direction:column;align-items:center}
+.eyebrow-light{color:var(--clay-soft)}
+.cta-title{font-family:var(--font-display);font-weight:400;font-size:46px;line-height:1.12;letter-spacing:-.02em;color:var(--paper);max-width:680px;margin:18px 0 0}
+.waitlist-form{display:flex;gap:12px;margin-top:38px;width:100%;max-width:480px}
+.waitlist-input{flex:1 1 auto;background-color:transparent;border:1px solid rgba(244,240,232,.35);color:var(--paper);padding:15px 18px;border-radius:3px;font-size:16px;font-family:var(--font-body)}
+.waitlist-input::placeholder{color:rgba(244,240,232,.5)}
+.waitlist-btn{background-color:var(--clay);color:var(--paper);border:none;padding:15px 26px;border-radius:3px;font-size:16px;cursor:pointer;font-family:var(--font-body)}
+.waitlist-btn:hover{background-color:var(--clay-soft);color:var(--ink)}
+.cta-note{font-size:14px;color:var(--clay-soft);margin-top:18px;opacity:.85}
+.cta-success{display:none;color:var(--clay-soft);font-size:18px;margin-top:30px}
+
+/* footer */
+.footer{padding:42px 0;border-top:1px solid var(--hairline)}
+.footer-inner{display:flex;align-items:center;justify-content:space-between}
+.footer-brand{font-family:var(--font-display);font-weight:600;font-size:20px}
+.footer-links{display:flex;gap:28px}
+.footer-link{color:var(--ink-soft);text-decoration:none;font-size:15px}
+.footer-link:hover{color:var(--clay)}
+.footer-copy{font-size:14px;color:var(--ink-soft)}
+
+@media screen and (max-width:991px){
+  .cards{grid-template-columns:1fr}
+}
+@media screen and (max-width:767px){
+  .hero-title{font-size:42px}.hero{padding:56px 0 72px}
+  .hero-enso{width:96px;height:96px}
+  .nav-right{gap:18px}.hero-cta{flex-direction:column;width:100%}
+  .section{padding:68px 0}.section-title{font-size:32px}
+  .two-col{grid-template-columns:1fr;gap:28px}
+  .loop-arrow{display:none}.step{flex:1 1 100%}
+  .rigor-grid{grid-template-columns:1fr;gap:28px}
+  .not-row{grid-template-columns:1fr;gap:10px;padding:24px 0}
+  .cta-title{font-size:34px}.waitlist-form{flex-direction:column}
+  .footer-inner{flex-direction:column;gap:18px}
+}
+</style>
+</head>
+<body>
+<a id="top"></a>
+<nav class="nav">
+  <div class="container nav-inner">
+    <a href="#top" class="nav-brand"><img src="enso.svg" alt="kaixn ensō mark"/><span>kaixn</span></a>
+    <div class="nav-right">
+      <a href="#how" class="nav-link">How it works</a>
+      <a href="#not" class="nav-link">What it's not</a>
+      <a href="https://app.kaixn.com" class="nav-link">Log in</a>
+      <a href="#waitlist" class="btn btn-sm">Join waitlist</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="container hero-inner">
+    <img class="hero-enso" src="enso.svg" alt="kaixn ensō mark"/>
+    <div class="eyebrow">A living source of truth for engineering &amp; product decisions</div>
+    <h1 class="hero-title">Agents write the code.<br/>You govern the decisions.</h1>
+    <p class="hero-sub">kaixn turns your team's architecture and product decisions into a living source of truth &mdash; mined from your code, governed by your team, and read by your agents.</p>
+    <div class="hero-cta">
+      <a href="#waitlist" class="btn btn-lg">Join the waitlist</a>
+      <a href="#how" class="btn btn-ghost btn-lg">See how it works</a>
+    </div>
+  </div>
+</header>
+
+<section class="section">
+  <div class="container">
+    <div class="section-head">
+      <div class="eyebrow">The shift</div>
+      <h2 class="section-title">Code got cheap.<br/>Judgment didn't.</h2>
+    </div>
+    <div class="two-col">
+      <div><p class="col-p">When agents write most of the code, volume stops being the bottleneck. The real risk becomes <em>drift</em> &mdash; code that quietly diverges from the architecture and product decisions your team already made.</p></div>
+      <div><p class="col-p">So review moves up the stack. The question is no longer &ldquo;is this line correct?&rdquo; but &ldquo;does this honor the decision we made?&rdquo; That judgment is the part that didn't get cheap.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="how" class="section">
+  <div class="container">
+    <div class="section-head">
+      <div class="eyebrow">How it works</div>
+      <h2 class="section-title">Three surfaces. One source of truth.</h2>
+      <p class="lead">The same governed handbook, seen from three sides &mdash; so intent, review, and execution finally point at one place.</p>
+    </div>
+    <div class="cards">
+      <div class="card">
+        <div class="card-eyebrow">Product &amp; eng leaders</div>
+        <h3 class="card-title">Declare intent</h3>
+        <p class="card-body">State a decision and see conflicts, gaps, and blast radius the moment it lands &mdash; before it ever reaches code.</p>
+      </div>
+      <div class="card">
+        <div class="card-eyebrow">Engineers</div>
+        <h3 class="card-title">Review the decision, not the diff</h3>
+        <p class="card-body">Every pull request is checked against the handbook your team governs, so review is about judgment &mdash; not line-by-line policing.</p>
+      </div>
+      <div class="card">
+        <div class="card-eyebrow">Coding agents</div>
+        <h3 class="card-title">Build from the same truth</h3>
+        <p class="card-body">Agents read the governed handbook over MCP, so what they ship inherits your team's architecture and product decisions by default.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <div class="section-head">
+      <div class="eyebrow">The loop</div>
+      <h2 class="section-title">A loop that keeps the truth alive.</h2>
+      <p class="lead">Decisions don't rot in a wiki. They flow through the work and come back stronger.</p>
+    </div>
+    <div class="loop">
+      <div class="step"><div class="step-num">01</div><div class="step-name">Intent</div></div>
+      <div class="loop-arrow">&rarr;</div>
+      <div class="step"><div class="step-num">02</div><div class="step-name">Plan</div></div>
+      <div class="loop-arrow">&rarr;</div>
+      <div class="step"><div class="step-num">03</div><div class="step-name">Agent builds</div></div>
+      <div class="loop-arrow">&rarr;</div>
+      <div class="step"><div class="step-num">04</div><div class="step-name">PR decision-review</div></div>
+      <div class="loop-arrow">&rarr;</div>
+      <div class="step"><div class="step-num">05</div><div class="step-name">Living handbook</div></div>
+    </div>
+    <p class="loop-caption">The handbook feeds the next intent. Decisions compound instead of drifting.</p>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <div class="rigor-grid">
+      <div>
+        <div class="eyebrow">Rigor for free</div>
+        <h2 class="section-title">Point it at a repo.<br/>Inherit the discipline.</h2>
+        <p class="lead">kaixn mines your codebase and its history to surface the architecture decisions already implicit in it &mdash; then holds new work to that standard.</p>
+      </div>
+      <div>
+        <ul class="rigor-list">
+          <li class="rigor-item">Decisions mined from real code and review history &mdash; not a blank document.</li>
+          <li class="rigor-item">Conventions and invariants told apart automatically, so enforcement fits the decision.</li>
+          <li class="rigor-item">Held to on every pull request, governed by your team &mdash; not a vendor's opinion.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="not" class="section">
+  <div class="container">
+    <div class="section-head">
+      <div class="eyebrow">Boundaries</div>
+      <h2 class="section-title">What kaixn is not.</h2>
+    </div>
+    <div class="not-list">
+      <div class="not-row"><div class="not-h">Not a coding agent</div><div class="not-p">It governs the decisions your agents follow &mdash; it doesn't write the code. Bring whichever agent you like.</div></div>
+      <div class="not-row"><div class="not-h">Not a linter</div><div class="not-p">Linters catch style and syntax. kaixn guards the architecture and product judgment a linter can't see.</div></div>
+      <div class="not-row"><div class="not-h">Not a doc store</div><div class="not-p">Docs go stale in a drawer. This is a living source of truth &mdash; mined, governed, and enforced.</div></div>
+    </div>
+  </div>
+</section>
+
+<section id="waitlist" class="cta">
+  <div class="container cta-inner">
+    <div class="eyebrow eyebrow-light">Get early access</div>
+    <h2 class="cta-title">The future of software is governed, not just generated.</h2>
+    <form class="waitlist-form" id="waitlist-form" method="POST" action="https://app.kaixn.com/api/waitlist">
+      <input class="waitlist-input" type="email" name="email" placeholder="you@team.com" required aria-label="Email address"/>
+      <button class="waitlist-btn" type="submit">Join the waitlist</button>
+    </form>
+    <p class="cta-note">Be first to govern your team's decisions. No spam &mdash; just launch news.</p>
+    <p class="cta-success" id="waitlist-success">Thanks &mdash; you're on the list. We'll be in touch.</p>
+  </div>
+</section>
+
+<footer class="footer">
+  <div class="container footer-inner">
+    <div class="footer-brand">kaixn</div>
+    <div class="footer-links">
+      <a href="#how" class="footer-link">How it works</a>
+      <a href="#not" class="footer-link">What it's not</a>
+      <a href="https://app.kaixn.com" class="footer-link">Log in</a>
+    </div>
+    <div class="footer-copy">&copy; 2026 kaixn</div>
+  </div>
+</footer>
+
+<script>
+// Progressive-enhancement: AJAX submit so the page shows a confirmation in place.
+// Works with Formspree (set the action above) or any endpoint returning 2xx.
+(function(){
+  var form = document.getElementById('waitlist-form');
+  if(!form) return;
+  form.addEventListener('submit', function(e){
+    e.preventDefault();
+    var email = (form.querySelector('input[name=email]')||{}).value || '';
+    fetch(form.action, {
+      method:'POST',
+      headers:{'Content-Type':'application/json','Accept':'application/json'},
+      body:JSON.stringify({email:email, source:'marketing'})
+    })
+      .then(function(r){
+        if(r.ok){ form.style.display='none'; document.getElementById('waitlist-success').style.display='block'; }
+        else { form.submit(); } // fall back to native POST (server redirects)
+      })
+      .catch(function(){ form.submit(); });
+  });
+})();
+</script>
+</body>
+</html>

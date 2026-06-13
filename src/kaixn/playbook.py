@@ -66,45 +66,71 @@ def _llm_json(prompt: str, *, model: str, max_tokens: int = 2048):
     return json.loads(raw)
 
 
+# --- principle linking -----------------------------------------------------
+def _axis_menu(principles: list[dict]) -> str:
+    """A compact menu of mined axes for the model to tag features/specs against."""
+    return "\n".join(f"  {p['axis']}: {p['value']}" for p in principles)
+
+
+def _valid_links(item: dict, known: set[str]) -> list[str]:
+    """Keep only principle links that name a real mined axis (drop hallucinations)."""
+    return [a for a in (item.get("principles") or []) if a in known][:4]
+
+
 # --- features / PRDs -------------------------------------------------------
-def build_features(root: pathlib.Path, *, llm: bool,
+def build_features(root: pathlib.Path, *, llm: bool, principles: list[dict],
                    model: str = "claude-sonnet-4-6") -> list[dict]:
+    known = {p["axis"] for p in principles}
     if llm:
         docs = _read_docs(root)
         prompt = (
             "From this repo's README and docs, list the user-facing PRODUCT "
             "FEATURES it implements — what a PM would put in a PRD. For each give "
             "a short name, a one-line summary, and the doc/section it came from. "
-            'Reply JSON: [{"name","summary","evidence"}].\n\n' + docs)
+            "Also tag each feature with `principles`: the axis ids from the menu "
+            "below that the feature most relies on (0–3, only from the menu).\n\n"
+            "PRINCIPLE MENU (axis: value):\n" + _axis_menu(principles) +
+            '\n\nReply JSON: [{"name","summary","evidence","principles":["axis", ...]}].'
+            "\n\nDOCS:\n" + docs)
         try:
-            return _llm_json(prompt, model=model)
+            feats = _llm_json(prompt, model=model)
+            for f in feats:
+                f["principles"] = _valid_links(f, known)
+            return feats
         except Exception:
             pass
-    # offline fallback: README section headings
+    # offline fallback: README section headings (no principle links)
     readme = next((p for p in root.glob("README*")), None)
     feats: list[dict] = []
     if readme:
         for line in readme.read_text(errors="ignore").splitlines():
             m = re.match(r"#{2,3}\s+(.*)", line.strip())
             if m:
-                feats.append({"name": m.group(1).strip(),
-                              "summary": "", "evidence": readme.name})
+                feats.append({"name": m.group(1).strip(), "summary": "",
+                              "evidence": readme.name, "principles": []})
     return feats[:20]
 
 
 # --- tech specs ------------------------------------------------------------
-def build_tech_specs(root: pathlib.Path, *, llm: bool,
+def build_tech_specs(root: pathlib.Path, *, llm: bool, principles: list[dict],
                      model: str = "claude-sonnet-4-6") -> list[dict]:
+    known = {p["axis"] for p in principles}
     if llm:
         blob = _source_blob(root, max_files=30, per_file=3000)
         prompt = (
             "From this source, extract the key TECHNICAL SPEC decisions a tech "
             "lead would document: the area, the decision made, why, and an "
             "evidence file. Cover stack/storage, interfaces/seams, data flow, "
-            'concurrency, and integration points. Reply JSON: '
-            '[{"area","decision","rationale","evidence"}].\n\n' + blob)
+            "concurrency, and integration points. Also tag each with `principles`: "
+            "the axis ids from the menu below that the decision embodies (0–3, only "
+            "from the menu).\n\nPRINCIPLE MENU (axis: value):\n" + _axis_menu(principles) +
+            '\n\nReply JSON: [{"area","decision","rationale","evidence",'
+            '"principles":["axis", ...]}].\n\nSOURCE:\n' + blob)
         try:
-            return _llm_json(prompt, model=model, max_tokens=3072)
+            specs = _llm_json(prompt, model=model, max_tokens=3072)
+            for s in specs:
+                s["principles"] = _valid_links(s, known)
+            return specs
         except Exception:
             pass
     # offline fallback: module first-line docstrings as spec notes
@@ -120,7 +146,8 @@ def build_tech_specs(root: pathlib.Path, *, llm: bool,
         if doc:
             specs.append({"area": p.stem,
                           "decision": doc.strip().splitlines()[0],
-                          "rationale": "", "evidence": str(p.relative_to(root))})
+                          "rationale": "", "evidence": str(p.relative_to(root)),
+                          "principles": []})
     return specs[:30]
 
 
@@ -131,8 +158,8 @@ def build(root: str | pathlib.Path, *, llm: bool | None = None,
     use_llm = _llm_enabled() if llm is None else llm
     principles = [_obs_dict(o) for o in mine_all(root, llm=use_llm, model=model)]
     return {
-        "features": build_features(root, llm=use_llm, model=model),
-        "tech_specs": build_tech_specs(root, llm=use_llm, model=model),
+        "features": build_features(root, llm=use_llm, principles=principles, model=model),
+        "tech_specs": build_tech_specs(root, llm=use_llm, principles=principles, model=model),
         "principles": principles,
         "llm": use_llm,
     }

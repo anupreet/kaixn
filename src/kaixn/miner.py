@@ -326,61 +326,142 @@ def _source_blob(root: pathlib.Path, *, max_files: int, per_file: int) -> str:
     return "\n\n".join(chunks)
 
 
+def _anthropic_json(prompt: str, *, model: str, max_tokens: int):
+    """One real Anthropic call returning the first JSON array in the reply."""
+    import json
+
+    from anthropic import Anthropic
+
+    msg = Anthropic().messages.create(
+        model=model, max_tokens=max_tokens,
+        messages=[{"role": "user", "content": prompt}])
+    raw = msg.content[0].text
+    return json.loads(raw[raw.find("["): raw.rfind("]") + 1])
+
+
+def _verify_axis(root: pathlib.Path, axis_id: str, value: str,
+                 candidates: list[str], *, model: str, sample_n: int
+                 ) -> tuple[int, int, list[Site]] | None:
+    """Verify a proposed design axis by SAMPLING real sites and classifying each
+    independently as follows / violates / not-applicable.
+
+    Returns (n_follow, n_decided, counterexamples) — a *real* support ratio, the
+    design's verify-by-sampling (docs/engineering-handbook-design.md §5). Returns
+    None when no candidate file actually exists (nothing to sample → can't verify;
+    caller falls back to the propose-time self-report)."""
+    seen: list[pathlib.Path] = []
+    for c in sorted(dict.fromkeys(candidates)):           # de-dup, deterministic
+        p = (root / c)
+        if p.is_file() and p not in seen:
+            seen.append(p)
+        if len(seen) >= sample_n:
+            break
+    if not seen:
+        return None
+    blob = "\n\n".join(
+        f"# {_rel(p, root)}\n" + p.read_text(encoding='utf-8', errors='ignore')[:3500]
+        for p in seen)
+    prompt = (
+        f"Convention under test — axis '{axis_id}': the repo's stated value is "
+        f"\"{value}\".\nFor EACH file below, decide INDEPENDENTLY whether it "
+        "FOLLOWS the convention, VIOLATES it, or the convention is NOT_APPLICABLE "
+        "to that file. Judge only what the file shows.\nReply JSON, one object per "
+        'file: [{"path","verdict":"follows|violates|n_a","note"}].\n\nFILES:\n'
+        + blob)
+    try:
+        verdicts = _anthropic_json(prompt, model=model, max_tokens=1536)
+    except Exception:
+        return None
+    follow = decided = 0
+    counter: list[Site] = []
+    for v in verdicts:
+        verdict = str(v.get("verdict", "")).lower()
+        if verdict == "follows":
+            follow += 1
+            decided += 1
+        elif verdict == "violates":
+            decided += 1
+            counter.append(Site(str(v.get("path", "?")), str(v.get("note", ""))[:80]))
+    if decided == 0:
+        return None
+    return follow, decided, counter[:5]
+
+
 def mine_semantic(root: str | pathlib.Path, *, model: str = "claude-sonnet-4-6",
-                  max_files: int = 40, per_file: int = 4000) -> list[Observation]:
+                  max_files: int = 40, per_file: int = 4000,
+                  verify: bool = True, sample_n: int = 6) -> list[Observation]:
     """Evaluate the design/architecture axes with the REAL Anthropic API.
+
+    Two passes (when ``verify``): (1) PROPOSE — read the source and report each
+    axis's value plus the *population* of files where the axis is decided; then
+    (2) VERIFY-BY-SAMPLING — independently classify a sample of those files as
+    follows/violates, yielding a *real* support ratio instead of the model's
+    self-reported consistency (method ``llm-verified``). Axes whose population
+    can't be sampled keep the propose-time estimate (method ``llm``).
 
     Raises if the key/SDK is absent — there is no fake fallback for the semantic
     pass (an LLM judge has no deterministic twin)."""
-    import json
     import os
 
     if not os.getenv("ANTHROPIC_API_KEY"):
         raise RuntimeError("ANTHROPIC_API_KEY not set — the semantic pass needs the real API")
-    from anthropic import Anthropic
 
     root = pathlib.Path(root)
     blob = _source_blob(root, max_files=max_files, per_file=per_file)
     axis_lines = "\n".join(f"  {aid}: {q}" for aid, q in DESIGN_AXES)
     prompt = (
         "You are mining a codebase's ARCHITECTURE/DESIGN. For each axis below, read "
-        "the source and report the repo's ACTUAL value, with evidence and how "
-        "consistently it holds. Be honest: set applies=false if the dimension is "
-        "irrelevant to this repo.\n\nAXES:\n" + axis_lines +
+        "the source and report the repo's ACTUAL value. Also list `relevant_files` "
+        "(up to 8 repo-relative paths): the files where this axis is DECIDED (include "
+        "both files that follow and any that don't — the population we sample to verify). "
+        "Be honest: set applies=false if the dimension is irrelevant to this repo."
+        "\n\nAXES:\n" + axis_lines +
         "\n\nReply with a JSON array, one object per axis, in order: "
         '[{"axis","applies","value","evidence":["path", ...],'
+        '"relevant_files":["path", ...],'
         '"consistency":"high|medium|low","tier":"advisory|governed","rationale"}]'
         "\n\nSOURCE:\n" + blob
     )
-    msg = Anthropic().messages.create(
-        model=model, max_tokens=4096,
-        messages=[{"role": "user", "content": prompt}])
-    raw = msg.content[0].text
-    raw = raw[raw.find("["): raw.rfind("]") + 1]
     out: list[Observation] = []
-    for d in json.loads(raw):
+    for d in _anthropic_json(prompt, model=model, max_tokens=8192):
         if not d.get("applies", True):
             continue
         cons = {"high": (10, 10), "medium": (7, 10), "low": (4, 10)}.get(
             str(d.get("consistency", "medium")).lower(), (7, 10))
+        n_match, n_total = cons
+        method = "llm"
+        counter: list[Site] = []
+        if verify:
+            pop = list(d.get("relevant_files") or []) + list(d.get("evidence") or [])
+            res = _verify_axis(root, d["axis"], d.get("value", ""), pop,
+                               model=model, sample_n=sample_n)
+            if res is not None:
+                n_match, n_total, counter = res
+                method = "llm-verified"
         out.append(Observation(
             axis_id=d["axis"],
             statement=d.get("rationale", d.get("value", "")),
             value=d.get("value", ""),
-            n_match=cons[0], n_total=cons[1],
+            n_match=n_match, n_total=n_total,
             sample_sites=[Site(p) for p in (d.get("evidence") or [])[:4]],
+            counterexamples=counter,
             tier=d.get("tier", "governed"),
-            method="llm",
+            method=method,
         ))
     return out
 
 
 def mine_all(root: str | pathlib.Path, *, llm: bool = False,
-             model: str = "claude-sonnet-4-6") -> list[Observation]:
-    """Deterministic floor + (optionally) the real-API semantic pass."""
+             model: str = "claude-sonnet-4-6", verify: bool = True
+             ) -> list[Observation]:
+    """Deterministic floor + (optionally) the real-API semantic pass.
+
+    When ``verify`` (default), the semantic axes are verified by sampling real
+    sites for an honest support ratio; pass ``verify=False`` for a single, cheaper
+    propose-only call."""
     obs = mine(root)
     if llm:
-        obs += mine_semantic(root, model=model)
+        obs += mine_semantic(root, model=model, verify=verify)
     return obs
 
 
@@ -409,6 +490,8 @@ def main() -> None:
     ap.add_argument("--threshold", type=float, default=0.8)
     ap.add_argument("--llm", action="store_true",
                     help="also run the real-API semantic/design pass")
+    ap.add_argument("--no-verify", action="store_true",
+                    help="skip verify-by-sampling (propose-only; cheaper, less honest)")
     ap.add_argument("--model", default="claude-sonnet-4-6")
     ap.add_argument("--out", default=None, help="write playbook markdown here")
     args = ap.parse_args()
@@ -421,7 +504,7 @@ def main() -> None:
         pass
 
     root = pathlib.Path(args.root)
-    obs = mine_all(root, llm=args.llm, model=args.model)
+    obs = mine_all(root, llm=args.llm, model=args.model, verify=not args.no_verify)
     report = render_playbook(root, obs, threshold=args.threshold)
     if args.out:
         pathlib.Path(args.out).write_text(report)
