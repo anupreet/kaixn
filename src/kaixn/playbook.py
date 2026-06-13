@@ -212,7 +212,10 @@ def build_index(root: pathlib.Path, *, llm: bool, principles: list[dict],
             '"principles":[]}], "tech_specs":[{"area","decision","rationale",'
             '"evidence","principles":[]}]}.\n\nREPO:\n' + ctx)
         try:
-            d = _llm_obj(prompt, model=model, max_tokens=4096)
+            # 8192: a balanced object (~13 features + ~13 specs, each with prose)
+            # overflows 4096 and truncates → JSON parse fails → silent offline
+            # fallback (the 6-PRD/30-spec shape seen on larger repos).
+            d = _llm_obj(prompt, model=model, max_tokens=8192)
             feats = d.get("features") or []
             specs = d.get("tech_specs") or []
             for f in feats:
