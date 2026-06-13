@@ -17,6 +17,16 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+# Best-effort: load ANTHROPIC_API_KEY etc. from .env for local runs (the LLM
+# playbook passes need it; docker/prod inject env directly).
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass
+
+from kaixn import playbook
 from kaixn.app import Kaixn
 
 _STATIC = pathlib.Path(__file__).parent / "static"
@@ -52,6 +62,11 @@ class ReviewBody(BaseModel):
     files: list[str] = []
     changes: list[str] = []
     summary: str = ""
+
+
+class PlaybookBody(BaseModel):
+    repo_url: str
+    llm: bool | None = None     # None → auto (on iff ANTHROPIC_API_KEY present)
 
 
 # -- API ---------------------------------------------------------------------
@@ -117,9 +132,26 @@ def review(proposal_id: str, body: ReviewBody) -> dict:
                             summary=body.summary)
 
 
+@app.post("/api/playbook")
+def playbook_endpoint(body: PlaybookBody) -> dict:
+    """Clone a repo and build its reviewable playbook (features / tech-specs /
+    engineering design principles)."""
+    try:
+        return playbook.build_from_url(body.repo_url, llm=body.llm)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+
 # -- UI ----------------------------------------------------------------------
 @app.get("/")
 def index() -> FileResponse:
+    return FileResponse(_STATIC / "playbook.html")
+
+
+@app.get("/classic")
+def classic() -> FileResponse:
     return FileResponse(_STATIC / "index.html")
 
 

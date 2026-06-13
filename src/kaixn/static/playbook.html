@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kaixn — Playbook</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --fg:#e6edf3;
+          --muted:#8b949e; --accent:#58a6ff; --good:#3fb950; --warn:#d29922; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+         background:var(--bg); color:var(--fg); }
+  header { padding:22px 28px; border-bottom:1px solid var(--line); }
+  h1 { margin:0; font-size:20px; letter-spacing:-.01em; }
+  h1 small { color:var(--muted); font-weight:400; font-size:14px; margin-left:8px; }
+  .wrap { max-width:1000px; margin:0 auto; padding:24px 28px 80px; }
+  .bar { display:flex; gap:10px; margin-bottom:6px; }
+  input { flex:1; background:var(--panel); border:1px solid var(--line); color:var(--fg);
+          padding:11px 13px; border-radius:8px; font-size:15px; }
+  input:focus { outline:none; border-color:var(--accent); }
+  button { background:var(--accent); color:#0d1117; border:0; padding:11px 18px;
+           border-radius:8px; font-weight:600; cursor:pointer; }
+  button:disabled { opacity:.55; cursor:default; }
+  .hint { color:var(--muted); font-size:13px; margin:2px 0 22px; }
+  .spin { display:flex; align-items:center; gap:12px; color:var(--muted); padding:30px 0; }
+  .dot { width:14px; height:14px; border:2px solid var(--line); border-top-color:var(--accent);
+         border-radius:50%; animation:spin .8s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .err { color:#f85149; background:#23090b; border:1px solid #5c1a1d; padding:12px 14px; border-radius:8px; }
+  .repohead { display:flex; align-items:center; gap:12px; margin:4px 0 18px; flex-wrap:wrap; }
+  .repohead .name { font-size:18px; font-weight:600; }
+  .badge { font-size:12px; padding:3px 9px; border-radius:999px; border:1px solid var(--line);
+           color:var(--muted); }
+  .badge.llm { border-color:#1f6feb; color:var(--accent); }
+  .tabs { display:flex; gap:4px; border-bottom:1px solid var(--line); margin-bottom:20px; }
+  .tab { padding:10px 16px; cursor:pointer; color:var(--muted); border-bottom:2px solid transparent;
+         font-weight:500; }
+  .tab.active { color:var(--fg); border-bottom-color:var(--accent); }
+  .tab .ct { font-size:12px; color:var(--muted); margin-left:6px; }
+  .pane { display:none; } .pane.active { display:block; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+          padding:14px 16px; margin-bottom:12px; }
+  .card .t { font-weight:600; }
+  .card .s { color:var(--muted); margin-top:3px; }
+  .ev { color:var(--muted); font-size:12px; margin-top:8px; font-family:ui-monospace,monospace; }
+  .group { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted);
+           margin:22px 0 10px; }
+  .ptop { display:flex; justify-content:space-between; gap:12px; align-items:baseline; }
+  .val { color:var(--accent); font-weight:600; }
+  .pills { display:flex; gap:6px; align-items:center; flex-shrink:0; }
+  .pill { font-size:11px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); color:var(--muted); }
+  .pill.gov { border-color:#9e6a03; color:var(--warn); }
+  .pill.adv { border-color:#238636; color:var(--good); }
+  .pill.llm { border-color:#1f6feb; color:var(--accent); }
+  .sup { font-family:ui-monospace,monospace; font-size:12px; color:var(--muted); }
+  .conv { color:var(--good); } .nconv { color:var(--muted); }
+  .counter { color:var(--warn); font-size:12px; margin-top:6px; font-family:ui-monospace,monospace; }
+  .empty { color:var(--muted); padding:18px 0; }
+</style>
+</head>
+<body>
+<header><h1>kaixn <small>· point at a repo, get its reviewable playbook</small></h1></header>
+<div class="wrap">
+  <div class="bar">
+    <input id="repo" placeholder="GitHub repo URL — e.g. https://github.com/encode/starlette"
+           value="https://github.com/encode/starlette">
+    <button id="go" onclick="run()">Generate playbook</button>
+  </div>
+  <div class="hint">Clones the repo and mines it: product features, tech specs, and the
+    engineering design principles it actually follows.</div>
+  <div id="out"></div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => (s??"").toString().replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+const STEPS = ["cloning the repo…", "scanning source (exact support)…",
+               "analyzing architecture & design (LLM)…", "assembling the playbook…"];
+let stepTimer = null;
+
+async function run() {
+  const url = $('repo').value.trim();
+  if (!url) return;
+  const go = $('go'); go.disabled = true;
+  const out = $('out');
+  let i = 0;
+  out.innerHTML = `<div class="spin"><div class="dot"></div><span id="st">${STEPS[0]}</span></div>`;
+  stepTimer = setInterval(() => { i = Math.min(i+1, STEPS.length-1); const s=$('st'); if(s) s.textContent = STEPS[i]; }, 9000);
+  try {
+    const r = await fetch('/api/playbook', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ repo_url: url }) });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || ('HTTP '+r.status));
+    render(data);
+  } catch (e) {
+    out.innerHTML = `<div class="err">${esc(e.message)}</div>`;
+  } finally { clearInterval(stepTimer); go.disabled = false; }
+}
+
+function render(d) {
+  const f = d.features||[], t = d.tech_specs||[], p = d.principles||[];
+  const llmBadge = d.llm ? `<span class="badge llm">LLM analysis</span>`
+                         : `<span class="badge">offline mode</span>`;
+  $('out').innerHTML = `
+    <div class="repohead"><span class="name">${esc(d.repo||'repo')}</span>${llmBadge}</div>
+    <div class="tabs">
+      <div class="tab active" data-t="feat" onclick="tab('feat')">Features / PRDs<span class="ct">${f.length}</span></div>
+      <div class="tab" data-t="tech" onclick="tab('tech')">Tech Specs<span class="ct">${t.length}</span></div>
+      <div class="tab" data-t="prin" onclick="tab('prin')">Engineering Design Principles<span class="ct">${p.length}</span></div>
+    </div>
+    <div id="feat" class="pane active">${renderFeatures(f)}</div>
+    <div id="tech" class="pane">${renderTech(t)}</div>
+    <div id="prin" class="pane">${renderPrinciples(p)}</div>`;
+}
+
+function tab(name) {
+  document.querySelectorAll('.tab').forEach(e => e.classList.toggle('active', e.dataset.t===name));
+  document.querySelectorAll('.pane').forEach(e => e.classList.toggle('active', e.id===name));
+}
+
+function renderFeatures(f) {
+  if (!f.length) return `<div class="empty">No features surfaced.</div>`;
+  return f.map(x => `<div class="card">
+    <div class="t">${esc(x.name)}</div>
+    ${x.summary ? `<div class="s">${esc(x.summary)}</div>`:''}
+    ${x.evidence ? `<div class="ev">${esc(x.evidence)}</div>`:''}</div>`).join('');
+}
+
+function renderTech(t) {
+  if (!t.length) return `<div class="empty">No tech-spec items surfaced.</div>`;
+  return t.map(x => `<div class="card">
+    <div class="t">${esc(x.area)}${x.decision?` — <span class="val">${esc(x.decision)}</span>`:''}</div>
+    ${x.rationale ? `<div class="s">${esc(x.rationale)}</div>`:''}
+    ${x.evidence ? `<div class="ev">${esc(x.evidence)}</div>`:''}</div>`).join('');
+}
+
+function renderPrinciples(p) {
+  if (!p.length) return `<div class="empty">No principles mined.</div>`;
+  const design = p.filter(x => x.method==='llm');
+  const conv = p.filter(x => x.method!=='llm');
+  let h = '';
+  if (design.length) h += `<div class="group">Design &amp; architecture (LLM)</div>` + design.map(card).join('');
+  if (conv.length) h += `<div class="group">Conventions (deterministic · exact support)</div>` + conv.map(card).join('');
+  return h;
+}
+
+function card(x) {
+  const tierCls = x.tier==='governed' ? 'gov' : 'adv';
+  const conv = x.convention ? `<span class="conv">✅ convention</span>` : `<span class="nconv">— below threshold</span>`;
+  const ev = (x.evidence||[]).slice(0,4).map(e=>esc(e)).join(' · ');
+  const ce = (x.counterexamples||[]).slice(0,3).map(e=>esc(e)).join(' · ');
+  return `<div class="card">
+    <div class="ptop">
+      <div><b>${esc(x.axis)}</b> · <span class="val">${esc(x.value)}</span></div>
+      <div class="pills">
+        <span class="pill ${tierCls}">${esc(x.tier)}</span>
+        <span class="pill ${x.method==='llm'?'llm':''}">${esc(x.method)}</span>
+        <span class="sup">${esc(x.support)}</span>
+      </div>
+    </div>
+    ${x.statement ? `<div class="s">${esc(x.statement)}</div>`:''}
+    <div class="ev">${conv}${ev?` · ${ev}`:''}</div>
+    ${ce ? `<div class="counter">counterexamples: ${ce}</div>`:''}
+  </div>`;
+}
+</script>
+</body>
+</html>
