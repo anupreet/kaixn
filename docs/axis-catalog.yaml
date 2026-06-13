@@ -1,0 +1,120 @@
+# kaixn — Engineering axis catalog (seed registry)
+#
+# The "what to look for" — the global, cross-repo registry of engineering axes.
+# A norm in a repo's handbook is an INSTANCE of one of these (its observed/ratified
+# value). See docs/engineering-handbook-design.md for the model.
+#
+# Per-axis schema:
+#   id:        stable key
+#   q:         the reviewer's question this axis answers
+#   values:    example value-space (illustrative, not exhaustive)
+#   extractor: det (deterministic AST/parse) | hist (git history) | llm (semantic) | catalog (lint/SAST rule)
+#   source:    snapshot | history | process | catalog | meta
+#   tier:      advisory (descriptive/observed) | governed (normative/principle) | either
+#
+# Comprehensive by construction: this seed is grown via import(rule catalogs) +
+# specialize(team lint config + PR/override history) + anchored meta-discovery.
+
+style:
+  - {id: naming-case,        q: "What casing do identifiers use (func/var/class/const)?", values: [snake_case, camelCase, PascalCase, SCREAMING_SNAKE], extractor: det,     source: snapshot, tier: advisory}
+  - {id: file-naming,        q: "How are files/modules named?",                            values: [snake_case, kebab-case],                          extractor: det,     source: snapshot, tier: advisory}
+  - {id: import-organization,q: "How are imports ordered/grouped (abs vs rel)?",           values: [grouped-stdlib-3p-local, absolute-only],          extractor: det,     source: snapshot, tier: advisory}
+  - {id: formatter,          q: "What formats/lints the code?",                            values: [ruff, black, none],                               extractor: det,     source: snapshot, tier: advisory}
+  - {id: docstring-style,    q: "Do modules/functions carry docstrings, what style?",      values: [module+public, google, numpy, none],              extractor: det,     source: snapshot, tier: advisory}
+  - {id: type-annotations,   q: "Are public functions type-annotated?",                    values: [full, partial, none],                             extractor: det,     source: snapshot, tier: advisory}
+  - {id: future-annotations, q: "Is `from __future__ import annotations` declared?",       values: [all-modules, some, none],                         extractor: det,     source: snapshot, tier: advisory}
+  - {id: comment-rationale,  q: "Do comments explain WHY, not what?",                       values: [why-focused, sparse],                             extractor: llm,     source: snapshot, tier: advisory}
+
+structure:
+  - {id: module-responsibility, q: "Does each module have a single clear responsibility?", values: [single, mixed],                                  extractor: llm,     source: snapshot, tier: governed}
+  - {id: layering-direction,    q: "Which way do dependencies point (callers→seam)?",       values: [inward-to-seams, layered, tangled],              extractor: llm,     source: snapshot, tier: governed}
+  - {id: seam-pattern,          q: "How are swap points defined?",                          values: [typing.Protocol, ABC, duck],                     extractor: llm,     source: snapshot, tier: advisory}
+  - {id: dependency-injection,  q: "How are dependencies provided?",                        values: [constructor, global, factory, env-switch],       extractor: llm,     source: snapshot, tier: advisory}
+  - {id: impl-pairing,          q: "Does every seam ship an in-memory/heuristic + real impl?", values: [paired, single],                             extractor: llm,     source: snapshot, tier: advisory}
+  - {id: offline-fallback,      q: "Does every LLM/external path have a deterministic fallback?", values: [always, sometimes, never],                extractor: llm,     source: snapshot, tier: governed}
+  - {id: package-layout,        q: "What is the source layout?",                            values: [src-layout, flat],                               extractor: det,     source: snapshot, tier: advisory}
+  - {id: config-management,     q: "How is configuration sourced?",                         values: [env-vars, toml-file, constants],                 extractor: det,     source: snapshot, tier: advisory}
+  - {id: public-surface,        q: "What defines the public API of a module?",              values: [__all__, leading-underscore-private],            extractor: det,     source: snapshot, tier: advisory}
+
+correctness:
+  - {id: error-signaling,    q: "How are failures signaled?",                              values: [raise, return-result, error-code],                extractor: llm,     source: snapshot, tier: governed}
+  - {id: error-propagation,  q: "Are errors swallowed or propagated with context?",         values: [propagated-with-cause, swallowed],               extractor: llm,     source: snapshot, tier: governed}
+  - {id: input-validation,   q: "Where are inputs validated?",                             values: [at-boundary, scattered, none],                   extractor: llm,     source: snapshot, tier: governed}
+  - {id: none-handling,      q: "How is None/absence handled?",                            values: [explicit-optional, sentinel, unchecked],          extractor: llm,     source: snapshot, tier: governed}
+  - {id: state-mutation,     q: "Is state mutated in place or append-only/immutable?",      values: [append-only, in-place],                          extractor: llm,     source: snapshot, tier: governed}
+  - {id: idempotency,        q: "Are repeatable operations idempotent?",                   values: [idempotent, not],                                extractor: llm,     source: snapshot, tier: governed}
+  - {id: concurrency-model,  q: "What is the concurrency model & is it race-safe?",         values: [sync, async, threaded],                          extractor: llm,     source: snapshot, tier: governed}
+  - {id: resource-lifecycle, q: "Are resources closed/cleaned (context managers)?",         values: [context-managed, manual, leaky],                 extractor: llm,     source: snapshot, tier: governed}
+
+data:
+  - {id: data-access,        q: "How is data fetched (seam vs inline)?",                   values: [reader-seam, inline-sql, orm],                    extractor: llm,     source: snapshot, tier: governed}
+  - {id: query-construction, q: "Are queries parameterized?",                              values: [parameterized, string-concat],                    extractor: catalog, source: catalog,  tier: governed}
+  - {id: transaction-boundaries, q: "Where are transaction boundaries drawn?",            values: [per-request, per-op, autocommit],                extractor: llm,     source: snapshot, tier: governed}
+  - {id: migration-strategy, q: "How are schema changes shipped?",                         values: [numbered-sql-append-only, orm-autogen, adhoc],   extractor: det+hist, source: snapshot, tier: governed}
+  - {id: schema-sot,         q: "What is the schema source of truth?",                     values: [sql-migrations, orm-models],                     extractor: det,     source: snapshot, tier: governed}
+  - {id: serialization,      q: "What serialization format/lib is standard?",             values: [pydantic, dataclass, json],                      extractor: det,     source: snapshot, tier: advisory}
+  - {id: time-handling,      q: "How are time/timezones handled?",                         values: [utc-aware, naive-local],                         extractor: llm,     source: snapshot, tier: governed}
+  - {id: numeric-money,      q: "How are money/precise numbers represented?",              values: [decimal, int-cents, float],                      extractor: llm,     source: snapshot, tier: governed}
+
+api:
+  - {id: response-shape,     q: "What is the standard response envelope?",                 values: [bare, enveloped, problem-details],               extractor: llm,     source: snapshot, tier: advisory}
+  - {id: error-response,     q: "What is the standard error format?",                      values: [problem-details, ad-hoc],                        extractor: llm,     source: snapshot, tier: governed}
+  - {id: versioning,         q: "How is the API versioned?",                              values: [url-path, header, none],                         extractor: llm,     source: snapshot, tier: governed}
+  - {id: pagination,         q: "How is list pagination done?",                           values: [cursor, offset, none],                           extractor: llm,     source: snapshot, tier: advisory}
+  - {id: status-codes,       q: "Are HTTP status codes used semantically?",               values: [semantic, 200-always],                           extractor: llm,     source: snapshot, tier: advisory}
+  - {id: backward-compat,    q: "What is the backward-compatibility policy?",             values: [additive-only, breaking-allowed],                extractor: process, source: process,  tier: governed}
+
+security:
+  - {id: secrets-handling,   q: "How are secrets provided?",                              values: [env, secret-manager, literal],                   extractor: det,     source: snapshot, tier: governed}
+  - {id: injection-safety,   q: "Are SQL/command/path injections prevented?",             values: [parameterized-safe, vulnerable],                 extractor: catalog, source: catalog,  tier: governed}
+  - {id: authz-boundary,     q: "Where is authorization enforced?",                       values: [central-boundary, scattered, none],              extractor: llm,     source: snapshot, tier: governed}
+  - {id: authn-pattern,      q: "How is authentication done?",                            values: [jwt, session, none],                             extractor: llm,     source: snapshot, tier: governed}
+  - {id: pii-handling,       q: "How is PII handled/redacted?",                           values: [redacted, logged-raw],                           extractor: llm,     source: snapshot, tier: governed}
+  - {id: crypto-usage,       q: "Is crypto used correctly (no homegrown)?",               values: [vetted-lib, homegrown],                          extractor: catalog, source: catalog,  tier: governed}
+  - {id: trust-boundary,     q: "Is external input validated at trust boundaries?",       values: [strict, lax],                                    extractor: llm,     source: snapshot, tier: governed}
+
+performance:
+  - {id: n-plus-one,         q: "Are N+1 query/loop patterns avoided?",                   values: [batched, n-plus-one],                            extractor: catalog, source: catalog,  tier: governed}
+  - {id: blocking-io,        q: "Is blocking I/O kept off hot/async paths?",              values: [non-blocking, blocking],                         extractor: llm,     source: snapshot, tier: governed}
+  - {id: caching,            q: "What is cached and how?",                                values: [explicit-cache, none],                           extractor: llm,     source: snapshot, tier: advisory}
+  - {id: indexing,           q: "Are DB access patterns indexed?",                        values: [indexed, unindexed],                             extractor: det,     source: snapshot, tier: governed}
+  - {id: complexity,         q: "Is algorithmic complexity reasonable for the path?",     values: [bounded, quadratic-hotpath],                     extractor: llm,     source: snapshot, tier: governed}
+
+reliability:
+  - {id: logging-pattern,    q: "Is logging structured & consistent?",                    values: [structured, print, none],                        extractor: det,     source: snapshot, tier: advisory}
+  - {id: observability,      q: "Are metrics/traces emitted?",                            values: [instrumented, none],                             extractor: llm,     source: snapshot, tier: advisory}
+  - {id: retry-backoff,      q: "Are external calls retried with backoff?",               values: [retry-backoff, none],                            extractor: llm,     source: snapshot, tier: governed}
+  - {id: timeouts,           q: "Do external calls set timeouts?",                        values: [explicit-timeout, none],                         extractor: llm,     source: snapshot, tier: governed}
+  - {id: graceful-degradation, q: "Does the system degrade gracefully (e.g. offline)?",   values: [graceful, hard-fail],                            extractor: llm,     source: snapshot, tier: governed}
+  - {id: feature-flags,      q: "Are risky changes gated behind flags/config?",           values: [flagged, direct],                                extractor: llm,     source: snapshot, tier: advisory}
+
+testing:
+  - {id: tests-first,        q: "Are tests written before/with implementation?",          values: [tdd, after, sparse],                             extractor: hist,    source: history,  tier: governed}
+  - {id: test-mirroring,     q: "Does each module have a mirrored test file?",            values: [mirrored, partial],                              extractor: det,     source: snapshot, tier: governed}
+  - {id: test-doubles,       q: "Fakes vs mocks for collaborators?",                      values: [fakes, mocks, real],                             extractor: llm,     source: snapshot, tier: advisory}
+  - {id: test-determinism,   q: "Do tests run offline/deterministically (no keys/net)?",  values: [deterministic, network-dependent],               extractor: llm,     source: snapshot, tier: governed}
+  - {id: edge-case-tests,    q: "Are edge/error cases tested, not just happy path?",      values: [thorough, happy-only],                           extractor: llm,     source: snapshot, tier: governed}
+  - {id: coverage-expectation, q: "Is there a coverage bar/gate?",                        values: [gated, none],                                    extractor: process, source: process,  tier: governed}
+
+dependencies:
+  - {id: dependency-choice,  q: "Which libraries are the standard choices?",              values: ["<per-lib>"],                                    extractor: det,     source: snapshot, tier: governed}
+  - {id: version-pinning,    q: "How are dependency versions pinned?",                    values: [lower-bound, exact-lock, unpinned],              extractor: det,     source: snapshot, tier: advisory}
+  - {id: optional-deps,      q: "How are optional capabilities split out?",              values: [extras, all-required],                           extractor: det,     source: snapshot, tier: advisory}
+  - {id: license-policy,     q: "What license / dependency-license policy applies?",      values: ["<license>"],                                    extractor: det,     source: snapshot, tier: governed}
+
+documentation:
+  - {id: module-docstrings,  q: "Do modules open with an explanatory docstring?",         values: [always, sometimes],                              extractor: det,     source: snapshot, tier: advisory}
+  - {id: adr-for-decisions,  q: "Are significant decisions recorded (ADR/docs)?",         values: [adr, docs, none],                                extractor: hist,    source: history,  tier: governed}
+  - {id: evidence-provenance,q: "Do derived/extracted records carry source evidence?",    values: [evidence-required, none],                        extractor: llm,     source: snapshot, tier: governed}
+  - {id: readme-maintained,  q: "Is the README kept current with the code?",             values: [current, stale],                                 extractor: hist,    source: history,  tier: advisory}
+
+maintainability:
+  - {id: function-complexity,q: "Are functions kept short / low-complexity?",            values: [small, large],                                   extractor: catalog, source: catalog,  tier: governed}
+  - {id: duplication,        q: "Is duplication avoided (DRY)?",                          values: [dry, duplicated],                                extractor: catalog, source: catalog,  tier: governed}
+  - {id: dead-code,          q: "Is dead/unused code removed?",                          values: [clean, dead-present],                            extractor: catalog, source: catalog,  tier: advisory}
+  - {id: atomic-records,     q: "Are records atomic (one claim/one change)?",            values: [atomic, compound],                               extractor: llm,     source: snapshot, tier: governed}
+  - {id: consistency,        q: "Does new code match surrounding conventions?",          values: [consistent, divergent],                          extractor: llm,     source: snapshot, tier: governed}
+
+# ~75 seeded axes across 12 categories. Grows via rule-catalog import (ruff/OWASP/
+# semgrep), team specialization (lint config + PR/override history), and anchored
+# meta-discovery. extractor=catalog axes map to existing lint/SAST rule IDs.
