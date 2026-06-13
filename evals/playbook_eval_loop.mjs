@@ -22,11 +22,10 @@ export const meta = {
   ],
 }
 
-const repo = args?.repo
-if (!repo) throw new Error('args.repo is required, e.g. {repo:"anupreet/kaixn"}')
-const N = args?.nPrs ?? 10
+const repo = args?.repo ?? 'langchain-ai/langchain'
+const N = args?.nPrs ?? 30
 const TARGET = args?.coverageTarget ?? 0.95
-const MAX_ROUNDS = args?.maxRounds ?? 4
+const MAX_ROUNDS = args?.maxRounds ?? 2
 
 const CRITIQUE_SCHEMA = {
   type: 'object', additionalProperties: false,
