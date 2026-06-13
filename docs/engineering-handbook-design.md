@@ -82,6 +82,41 @@ The catalog does **double duty**: the handbook's schema (what we remember) **and
 per-PR gate's checklist (what we check a diff against). The reviewer's rubric *is* the
 constitution's table of contents.
 
+### 2.5 Enforcement — invariant vs convention (the zero-comment requirement)
+
+Tier (advisory/governed) is *trust*. It does **not** tell you whether generated code
+will actually obey a norm. That requires a second, orthogonal property: **how is a
+violation mechanically caught?**
+
+> **Litmus:** for any axis we expect generated code to honor — *"how would a linter,
+> type-checker, or test catch a violation?"* If the only answer is "a human reviewer
+> would," the norm is **advisory in practice**, regardless of its tier label, and
+> generated code *will* violate it.
+
+So every axis carries:
+- `enforce`: `mypy-strict` | `ruff:<rule>` | `custom-check:<name>` | `test:<pattern>` | `human`
+- `enforceable` (derived): **invariant** (mechanical) vs **convention** (judgment).
+
+**The constitution compiles to a gate.** Each invariant emits its enforcement
+artifact — a strict-mypy config, a selected/﻿custom ruff rule, a check, or a test —
+and the per-PR gate runs *those mechanically*. The **LLM is reserved for true
+conventions** that need judgment, never for re-checking what a linter should catch.
+This is the mechanism behind zero-comment generation: the agent reads the handbook
+*and* its output must pass the compiled gate.
+
+**Honesty rule:** a `governed` axis whose only `enforce` is `human` is flagged
+`enforceable: convention` and is a **backlog item** — either build the check
+(custom ruff/mypy plugin/test) or stop pretending it's enforced. The validation run
+found eight such axes (error-signaling, input-validation, none-handling,
+state-mutation, idempotency, resource-lifecycle, data-access, trust-boundary); each
+needs a mechanical path or an honest downgrade.
+
+**Granularity follows from this.** A coarse axis ("full type annotations") isn't
+enforceable; its rule-bearing children are ("`Any` banned except justified
+`# type: ignore` → `ruff:ANN401` + `mypy-strict`"). Generation-grade axes carry a
+concrete **`rule`** (what the agent must do) plus **`enforce`** — see the
+generation-grade section of `axis-catalog.yaml`.
+
 ---
 
 ## 3. Record shapes

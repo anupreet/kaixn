@@ -118,3 +118,77 @@ maintainability:
 # ~75 seeded axes across 12 categories. Grows via rule-catalog import (ruff/OWASP/
 # semgrep), team specialization (lint config + PR/override history), and anchored
 # meta-discovery. extractor=catalog axes map to existing lint/SAST rule IDs.
+
+# ===========================================================================
+# GENERATION-GRADE AXES  (for zero-comment code generation)
+# ---------------------------------------------------------------------------
+# The axes above say WHAT dimension to look at. These say WHAT THE RULE IS and
+# HOW A VIOLATION IS CAUGHT — the level an agent needs to emit reviewable code.
+# Extra fields:
+#   rule:        the concrete decision an agent must follow
+#   enforce:     mypy-strict | ruff:<rules> | custom-check:<name> | test:<pattern> | human
+#   enforceable: invariant (mechanical) | convention (judgment)
+# Honesty: enforce=human ⇒ enforceable=convention ⇒ backlog a real check or downgrade.
+# ===========================================================================
+
+type_system:
+  - {id: type-strict,        rule: "mypy --strict passes; no implicit Any",                    enforce: "mypy-strict",        enforceable: invariant}
+  - {id: type-any-policy,    rule: "`Any` banned except explicit `# type: ignore[code]` + justification", enforce: "ruff:ANN401 + mypy-strict", enforceable: invariant}
+  - {id: type-model-choice,  rule: "TypedDict=loose JSON shapes; dataclass(slots)=internal value types; pydantic=API boundary only", enforce: "custom-check:model-choice", enforceable: convention}
+  - {id: type-cast-usage,    rule: "cast() only to narrow a known-safe union, never to silence checker", enforce: "human", enforceable: convention}
+  - {id: type-generics,      rule: "TypeVar for containers, ParamSpec for decorators; never Any as a generic escape", enforce: "mypy-strict + human", enforceable: convention}
+  - {id: type-overload,      rule: "@overload required when return type varies by argument type", enforce: "mypy-strict", enforceable: invariant}
+
+error_architecture:
+  - {id: err-taxonomy,       rule: "custom exceptions subclass a base KaixnError in errors.py; builtins only for truly generic cases", enforce: "custom-check:exc-base", enforceable: invariant}
+  - {id: err-broad-except,   rule: "no bare `except Exception` except at the web boundary, which must log + convert", enforce: "ruff:BLE001", enforceable: invariant}
+  - {id: err-assert-prod,    rule: "no `assert` for runtime validation (stripped by -O); assert only for programmer-error invariants", enforce: "ruff:S101", enforceable: invariant}
+  - {id: err-chaining,       rule: "always `raise X from e` (or `from None` to deliberately suppress)", enforce: "ruff:B904", enforceable: invariant}
+  - {id: err-degraded-shape, rule: "fallback shape: try real → on failure log warning → return deterministic impl", enforce: "test:fallback-shape", enforceable: invariant}
+
+function_design:
+  - {id: fn-arg-count,       rule: ">3 positional args → take a dataclass/config object", enforce: "ruff:PLR0913", enforceable: invariant}
+  - {id: fn-guard-clauses,   rule: "early-return preconditions; no deep if/else nesting", enforce: "ruff:SIM102+C901", enforceable: invariant}
+  - {id: fn-bool-arg,        rule: "no boolean selector args (split into two functions)", enforce: "ruff:FBT", enforceable: invariant}
+  - {id: fn-mutate-or-return,rule: "a function mutates its args OR returns a new value, never both", enforce: "custom-check:mutate-or-return", enforceable: convention}
+  - {id: fn-complexity,      rule: "cyclomatic complexity <= 10", enforce: "ruff:C901", enforceable: invariant}
+
+seam_contract:
+  - {id: seam-surface,       rule: "concrete impls expose nothing public beyond the Protocol; extras are _private", enforce: "custom-check:protocol-surface", enforceable: invariant}
+  - {id: seam-runtime-check, rule: "Protocols are static-only; no @runtime_checkable unless isinstance is genuinely needed", enforce: "ruff/custom", enforceable: convention}
+  - {id: seam-new-protocol,  rule: "new Protocol only when >=2 impls exist or are planned; else concrete", enforce: "human", enforceable: convention}
+
+sql_contract:
+  - {id: sql-no-loop-query,  rule: "no query inside a loop; bulk via IN / executemany", enforce: "custom-check:n-plus-one", enforceable: invariant}
+  - {id: sql-row-mapping,    rule: "rows → domain type via one canonical mapper, not ad-hoc per query", enforce: "custom-check:row-mapper", enforceable: convention}
+  - {id: sql-null-coercion,  rule: "nullable column → Optional[...] at the mapping layer", enforce: "mypy-strict + human", enforceable: convention}
+  - {id: sql-multistep-atomicity, rule: "multi-write ops wrap an explicit transaction despite autocommit default", enforce: "custom-check:txn-scope", enforceable: invariant}
+
+concurrency_safety:
+  - {id: conc-shared-state,  rule: "no mutable module/class-level state shared across requests", enforce: "custom-check:shared-mutable", enforceable: invariant}
+  - {id: conc-subprocess,    rule: "all subprocess calls via a canonical run() wrapper with a timeout", enforce: "custom-check:subprocess-wrapper", enforceable: invariant}
+  - {id: conc-async-policy,  rule: "no `async def` in core/domain layers; async only at the FastAPI route layer", enforce: "custom-check:async-layer", enforceable: invariant}
+
+mutation_invariants:
+  - {id: mut-no-direct,      rule: "persisted-record status changes only via set_status/supersede; no direct field assignment", enforce: "custom-check:no-direct-mutation", enforceable: invariant}
+  - {id: mut-state-machine,  rule: "valid status transitions enumerated; guards reference the enum", enforce: "test:state-transitions", enforceable: invariant}
+  - {id: mut-duplicate,      rule: "duplicate write policy is explicit and uniform: <upsert|raise|skip> (RESOLVE)", enforce: "test:duplicate-policy", enforceable: invariant}
+
+privacy_naming:
+  - {id: priv-module-extract,rule: "private helper earns its own _<name>.py when large or reused", enforce: "human", enforceable: convention}
+  - {id: priv-no-mangling,   rule: "single leading underscore only; no __dunder name-mangling", enforce: "custom-check:no-dunder", enforceable: invariant}
+  - {id: priv-test-private,  rule: "private funcs tested via the public surface; else make module-public", enforce: "human", enforceable: convention}
+
+serialization_boundary:
+  - {id: ser-boundary,       rule: "pydantic only at/above the web layer, never below; dataclasses never self-serialize to JSON — convert at the boundary", enforce: "custom-check:pydantic-layer", enforceable: invariant}
+  - {id: ser-conversion,     rule: "canonical conversion call site (model_validate / _to_dict), not per-route", enforce: "human", enforceable: convention}
+  - {id: ser-validators,     rule: "field constraints via pydantic validators at API; domain validation in the domain layer", enforce: "human", enforceable: convention}
+
+fallback_shape:
+  - {id: fb-factory-sig,     rule: "from_env returns the Protocol type; never raises for missing OPTIONAL keys (falls back); raises only on malformed REQUIRED config", enforce: "test:from-env", enforceable: invariant}
+  - {id: fb-degraded-signal, rule: "fallback logs a warning (never silent)", enforce: "custom-check:fallback-warns", enforceable: invariant}
+  - {id: fb-both-tested,     rule: "both impls tested independently; in-memory is not a proxy for the real one", enforce: "test:both-impls", enforceable: invariant}
+
+# Generation-grade axes are the per-PR gate's mechanical checklist. invariant axes
+# COMPILE to the gate (mypy-strict config + ruff selection + custom checks + tests);
+# convention axes remain LLM/human judgment. Open RESOLVE: mut-duplicate policy.
