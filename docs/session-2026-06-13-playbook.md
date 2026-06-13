@@ -16,9 +16,38 @@ four big phases:
 3. **UX** — stream-as-you-generate, Add/Explore, doc pages, balance + ordering fixes.
 4. **Robustness** — server-side jobs (survive disconnect, fix concurrency race).
 
+## Timeline (commit times, this thread bolded)
+
+| time  | commit    | what |
+|-------|-----------|------|
+| 09:26 | `c6456b2` | seed engineering axis catalog (~75 axes) |
+| 09:28 | `697492e` | hand-mined validation playbook for kaixn |
+| 09:43 | `9a6bd76` | enforcement dimension + generation-grade axes |
+| 10:21 | `563a68b` | mut-duplicate policy: deterministic→upsert |
+| 10:45–11:16 | `4c47ec9`,`2854c87` | playbook eval-loop + guideline-coverage evals |
+| 11:41–11:54 | `407b56e`,`0c15804`,`fbec569` | curate catalog · design-playbook workflow · rigor-for-free demo |
+| 12:26 | `c36827c` | rewrite README around the handbook direction |
+| **12:38** | **`2b6151f`** | **real miner: deterministic floor + live-API design pass** |
+| **12:47** | **`fd0d9ae`** | **Playbook UI: add a repo → 3-tab webpage** |
+| 12:50–13:00 | `5d67227`,`8dceb0c` | aws deploy scripts · update website |
+| **13:12** | **`f5a48f5`** | **scrub `.env.save` secret from history + harden gitignore** |
+| 13:35 | `32a47cf` | (user) marketing waitlist + verify-by-sampling |
+| 13:41 | `23b6bfd` | merge origin/main (reconcile parallel work) |
+| **14:02** | **`cb5c1bd`** | **stream LLM calls + bound timeout — fix the 31-min hang** |
+| **14:32** | **`9a7ca82`** | **stream the playbook as it's generated (SSE)** |
+| **15:05** | **`5c92b78`** | **eager knowledge layer: full PRD/Spec docs + domain + Add/Explore** |
+| **15:11** | **`286014b`** | **reorder stream: PRDs/specs + docs first** |
+| 15:12 | `0cc77e1` | (user) deploy guide + DevOps session history |
+| **15:23** | **`bafa268`** | **balance features vs tech-specs (build_index): 23/1 → 13/13** |
+| 15:36 | `79a6d12` | (user) raise ALB idle_timeout to 600s for SSE |
+| **15:39** | **`ea5c4b4`** | **persist domain/principles robustly + ↻ refresh from Explore** |
+| 15:51 | `6d2510f` | (user) marketing session notes |
+| **15:56** | **`859f45d`** | **server-side jobs: survive disconnect, fix concurrency race** |
+| **16:12** | **`63fd4e1`** | **build_index max_tokens 4096→8192 (stop silent offline fallback)** |
+
 ---
 
-## Phase 0 — housekeeping (morning)
+## Phase 0 — housekeeping (~13:12, `f5a48f5`)
 
 - **Committed secret remediation.** `.env.save` held a live `ANTHROPIC_API_KEY`.
   Scrubbed from *all* git history via `git filter-repo`, hardened `.gitignore`
@@ -29,7 +58,7 @@ four big phases:
   verify-by-sampling, deploy work). Lesson recorded in memory: always `git fetch`
   + check `git log`/`git diff HEAD` before assuming the tree is mine.
 
-## Phase 1 — miner: verify-by-sampling + the hang fix
+## Phase 1 — miner: verify-by-sampling + the hang fix (12:38–14:02)
 
 - **verify-by-sampling** (`miner.mine_semantic`): PROPOSE (value + a `relevant_files`
   population) → VERIFY (independently classify a sample of those files
@@ -44,14 +73,14 @@ four big phases:
   surfaced real violations (`data-access` 83%, `offline-fallback` 67%).
 - Known caveat: proposer picks the verify population → sample skews adherent.
 
-## Phase 2 — stream the playbook as it's generated (`9a7ca82`)
+## Phase 2 — stream the playbook as it's generated (14:32, `9a7ca82`)
 
 Turned the one ~3-min spinner into a live-filling page over **SSE**. Refactored
 `mine_semantic` into `_semantic_propose` + `_observe_axis` + a `mine_semantic_iter`
 generator so design cards stream one at a time. `POST /api/playbook/stream`
 (StreamingResponse); client consumes via fetch+ReadableStream.
 
-## Phase 3 — the knowledge layer (`5c92b78`, the big pivot)
+## Phase 3 — the knowledge layer (15:05, `5c92b78` — the big pivot)
 
 User reframed the goal: **this is the human interface, and the knowledge agents
 read to evaluate a new PRD or PR.** That drove three decisions (asked + locked):
@@ -75,7 +104,7 @@ Built:
   clickable list → each opens at `/doc?...`, **Domain Model** tab (Mermaid), new
   `doc.html` (marked + mermaid, polls while generating).
 
-## Phase 4 — the fixes that came from real runs
+## Phase 4 — the fixes that came from real runs (15:11–16:12)
 
 - **DevOps (user, in parallel):** raised ALB idle timeout to 600s for SSE
   (`79a6d12`); rewrote deploy guide.
