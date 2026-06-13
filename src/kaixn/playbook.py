@@ -58,12 +58,12 @@ def _read_docs(root: pathlib.Path, *, limit: int = 8, per: int = 6000) -> str:
 def _llm_json(prompt: str, *, model: str, max_tokens: int = 2048):
     from anthropic import Anthropic
 
-    msg = Anthropic().messages.create(
+    client = Anthropic(max_retries=2, timeout=120.0)
+    with client.messages.stream(
         model=model, max_tokens=max_tokens,
-        messages=[{"role": "user", "content": prompt}])
-    raw = msg.content[0].text
-    raw = raw[raw.find("["): raw.rfind("]") + 1]
-    return json.loads(raw)
+        messages=[{"role": "user", "content": prompt}]) as stream:
+        raw = "".join(t for t in stream.text_stream)
+    return json.loads(raw[raw.find("["): raw.rfind("]") + 1])
 
 
 # --- principle linking -----------------------------------------------------

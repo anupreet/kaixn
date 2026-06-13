@@ -327,15 +327,19 @@ def _source_blob(root: pathlib.Path, *, max_files: int, per_file: int) -> str:
 
 
 def _anthropic_json(prompt: str, *, model: str, max_tokens: int):
-    """One real Anthropic call returning the first JSON array in the reply."""
+    """One real Anthropic call returning the first JSON array in the reply.
+
+    Streams the response (large non-streaming calls can stall the socket past the
+    default timeout) and bounds each request so the pass can't hang."""
     import json
 
     from anthropic import Anthropic
 
-    msg = Anthropic().messages.create(
+    client = Anthropic(max_retries=2, timeout=120.0)
+    with client.messages.stream(
         model=model, max_tokens=max_tokens,
-        messages=[{"role": "user", "content": prompt}])
-    raw = msg.content[0].text
+        messages=[{"role": "user", "content": prompt}]) as stream:
+        raw = "".join(t for t in stream.text_stream)
     return json.loads(raw[raw.find("["): raw.rfind("]") + 1])
 
 
