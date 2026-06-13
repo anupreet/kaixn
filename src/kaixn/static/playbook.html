@@ -33,6 +33,10 @@
   .repohead { display:flex; align-items:center; gap:12px; margin:4px 0 8px; flex-wrap:wrap; }
   .repohead .name { font-size:18px; font-weight:600; }
   .back { color:var(--accent); text-decoration:none; font-size:13px; }
+  .topbar { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  .mini { background:transparent; color:var(--muted); border:1px solid var(--line);
+          padding:5px 11px; border-radius:7px; font-size:12px; font-weight:500; cursor:pointer; }
+  .mini:hover { color:var(--accent); border-color:var(--accent); }
   .badge { font-size:12px; padding:3px 9px; border-radius:999px; border:1px solid var(--line);
            color:var(--muted); }
   .badge.llm { border-color:#1f6feb; color:var(--accent); }
@@ -143,6 +147,8 @@ async function landing() {
       <div class="repo-row" onclick="viewRepo('${encodeURIComponent(x.repo)}')">
         <span class="nm">${esc(shortRepo(x.repo))}</span>
         <span class="meta">${x.n_docs} docs${x.llm===false?' · offline':''}</span>
+        <button class="mini" title="Regenerate from latest code"
+                onclick="event.stopPropagation(); run('${esc(x.repo)}')">↻ refresh</button>
         <span class="arrow">→</span>
       </div>`).join('') : `<div class="empty">No repos indexed yet — add one above.</div>`;
   } catch (e) { $('repolist').innerHTML = `<div class="empty">Could not load indexed repos.</div>`; }
@@ -232,7 +238,10 @@ function renderShell() {
   const llmBadge = S.llm == null ? '' : (S.llm ? `<span class="badge llm">LLM</span>`
                                                 : `<span class="badge">offline</span>`);
   $('out').innerHTML = `
-    <div><a class="back" href="#" onclick="go_home();return false">← all repos</a></div>
+    <div class="topbar">
+      <a class="back" href="#" onclick="go_home();return false">← all repos</a>
+      <button class="mini" title="Regenerate from latest code" onclick="run('${esc(S.repo)}')">↻ regenerate</button>
+    </div>
     <div class="repohead"><span class="name">${esc(shortRepo(S.repo)||'repo')}</span>${llmBadge}</div>
     <div id="prog" class="prog"></div>
     <div class="tabs">

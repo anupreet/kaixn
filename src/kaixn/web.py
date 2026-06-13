@@ -197,15 +197,16 @@ def playbook_stream(body: PlaybookBody) -> StreamingResponse:
                 if e == "meta":
                     repo = ev["repo"]
                     pid = store.create_playbook(repo, llm=bool(ev.get("llm")))
-                elif e == "conventions":
+                elif e == "conventions" and pid is not None:
                     principles = list(ev.get("items", []))
-                elif e == "principle":
+                    store.update_playbook(pid, principles=principles)
+                elif e == "principle" and pid is not None:
                     principles.append(ev["item"])
+                    store.update_playbook(pid, principles=principles)
                 elif e == "domain" and pid is not None:
                     d = ev.get("domain", {})
                     store.update_playbook(pid, mermaid=d.get("mermaid"),
-                                          entities=d.get("entities", []),
-                                          principles=principles)
+                                          entities=d.get("entities", []))
                 elif e == "doc" and pid is not None:
                     store.save_doc(pid, repo=repo, kind=ev["kind"], slug=ev["slug"],
                                    title=ev["title"], summary=ev.get("summary", ""),

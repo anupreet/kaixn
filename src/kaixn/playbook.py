@@ -402,14 +402,15 @@ def build_stream(root: str | pathlib.Path, *, llm: bool | None = None,
     documents FIRST (they're the point of this interface), then the slower
     analysis:
 
-      meta → conventions (instant) → feature/spec LISTS → one `doc` per generated
-      PRD/Tech Spec (concurrent) → `principle` per verified design axis → domain →
-      done
+      meta → conventions (instant) → domain → feature/spec LISTS → one `doc` per
+      generated PRD/Tech Spec (concurrent) → `principle` per verified design axis
+      → done
 
-    Ordering rationale: the default view is PRDs, so the lists must appear within
-    seconds and their full docs stream in next — not after a ~2-min design pass.
-    The design principles + domain model fill their own tabs afterwards. Each
-    yielded value is a JSON-serializable event dict."""
+    Ordering rationale: PRDs are the default view, so the lists must appear within
+    seconds and their docs stream next — not after the ~2-min design pass. Domain
+    is one cheap call, emitted (and persisted) up-front so it survives even if the
+    long doc phase is interrupted; the slow design principles fill their tab last
+    but are persisted incrementally. Each yielded value is a JSON event dict."""
     root = pathlib.Path(root)
     use_llm = _llm_enabled() if llm is None else llm
     yield {"event": "meta", "llm": use_llm}
@@ -418,7 +419,13 @@ def build_stream(root: str | pathlib.Path, *, llm: bool | None = None,
     principles: list[dict] = [_obs_dict(o) for o in mine(root)]
     yield {"event": "conventions", "items": principles}
 
-    # 2) feature + tech-spec LISTS — emit immediately (stable slugs) so the
+    # 2) domain model (DDD graph) — one cheap call, persisted up-front so it's
+    #    never lost to an interrupted doc phase.
+    if use_llm:
+        yield {"event": "status", "step": "mapping the domain model…"}
+    yield {"event": "domain", "domain": build_domain(root, llm=use_llm, model=model)}
+
+    # 3) feature + tech-spec LISTS — emit immediately (stable slugs) so the
     #    default PRDs/Tech-Specs tabs populate within seconds.
     yield {"event": "status", "step": "extracting features & tech specs…"}
     features, specs = build_index(root, llm=use_llm, principles=principles, model=model)
@@ -427,7 +434,7 @@ def build_stream(root: str | pathlib.Path, *, llm: bool | None = None,
     yield {"event": "features", "items": [i for i in items if i["kind"] == "prd"]}
     yield {"event": "tech_specs", "items": [i for i in items if i["kind"] == "spec"]}
 
-    # 3) full templated documents — generated CONCURRENTLY (the heavy part: one
+    # 4) full templated documents — generated CONCURRENTLY (the heavy part: one
     #    LLM call per item). Emit as each lands so its row flips to "ready".
     yield {"event": "status", "step": f"generating {len(items)} full documents…"}
 
@@ -448,8 +455,8 @@ def build_stream(root: str | pathlib.Path, *, llm: bool | None = None,
                 yield {"event": "doc_error", "kind": it["kind"], "slug": it["slug"],
                        "title": it["title"], "detail": str(e)[:160]}
 
-    # 4) design/architecture principles — propose + verify-by-sampling (the slow
-    #    pass), streamed one card at a time into the Principles tab.
+    # 5) design/architecture principles — propose + verify-by-sampling (the slow
+    #    pass), streamed + persisted one card at a time into the Principles tab.
     if use_llm:
         yield {"event": "status", "step": "analyzing architecture & design (LLM)…"}
         try:
@@ -459,11 +466,6 @@ def build_stream(root: str | pathlib.Path, *, llm: bool | None = None,
                 yield {"event": "principle", "item": d}
         except Exception as e:                       # real API down mid-stream
             yield {"event": "status", "step": f"design pass skipped: {str(e)[:120]}"}
-
-    # 5) domain model (DDD graph)
-    if use_llm:
-        yield {"event": "status", "step": "mapping the domain model…"}
-    yield {"event": "domain", "domain": build_domain(root, llm=use_llm, model=model)}
     yield {"event": "done"}
 
 
