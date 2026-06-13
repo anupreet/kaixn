@@ -190,11 +190,24 @@ class PgPlaybookStore:
                 for r in rows]
 
 
+_MEM_SINGLETON: InMemoryPlaybookStore | None = None
+
+
 def from_env() -> InMemoryPlaybookStore | PgPlaybookStore:
-    """Pg store when KAIXN_DSN is set (self-creates its tables), else in-memory."""
+    """A playbook store from the environment.
+
+    Pg (KAIXN_DSN set) → a FRESH connection each call, so a background job thread
+    and the request threads each own their own connection (psycopg connections
+    aren't shared-thread-safe); they all see the same database.
+
+    In-memory (no DSN) → a process-wide SINGLETON, because there's no database to
+    share through: a job thread and the read endpoints must mutate the same dict."""
     dsn = os.getenv("KAIXN_DSN")
     if not dsn:
-        return InMemoryPlaybookStore()
+        global _MEM_SINGLETON
+        if _MEM_SINGLETON is None:
+            _MEM_SINGLETON = InMemoryPlaybookStore()
+        return _MEM_SINGLETON
     import psycopg
 
     return PgPlaybookStore(psycopg.connect(dsn, autocommit=True))

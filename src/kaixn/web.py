@@ -62,13 +62,30 @@ def service() -> Kaixn:
 
 def playbook_store():
     """Lazily-built persistence for generated playbooks (Pg if KAIXN_DSN, else
-    in-memory). Single instance reused across requests."""
+    in-memory). Single instance reused across READ requests; jobs make their own
+    (see playbook_store.from_env)."""
     global _pstore
     if _pstore is None:
         from kaixn import playbook_store as ps
 
         _pstore = ps.from_env()
     return _pstore
+
+
+_jobs = None
+
+
+def jobs():
+    """The process-wide generation job manager. Jobs each build their own store
+    (own Pg connection / the shared in-memory singleton)."""
+    global _jobs
+    if _jobs is None:
+        from kaixn import playbook_store as ps
+        from kaixn.playbook_jobs import JobManager
+
+        _jobs = JobManager(store_factory=ps.from_env,
+                           generate=playbook.build_stream_from_url)
+    return _jobs
 
 
 # -- request models ----------------------------------------------------------
@@ -173,57 +190,54 @@ def playbook_endpoint(body: PlaybookBody) -> dict:
         raise HTTPException(status_code=502, detail=str(e)) from e
 
 
+_SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+
+@app.post("/api/playbook/generate")
+def playbook_generate(body: PlaybookBody) -> dict:
+    """Start (or reuse) a server-side generation JOB for a repo and return
+    immediately. Generation runs in a background thread and persists as it goes —
+    it survives the client disconnecting. One job per repo (a second request for
+    a repo already generating returns the in-flight job, avoiding a racing run
+    that would corrupt persistence). Subscribe to progress via /events."""
+    try:
+        repo = playbook.normalize_repo_url(body.repo_url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    job = jobs().start(repo, body.llm)
+    return {"repo": repo, "status": job.status}
+
+
+@app.get("/api/playbook/events")
+def playbook_events(repo: str) -> StreamingResponse:
+    """SSE stream for a repo's generation job: full replay of what's happened so
+    far, then live tail until done. Reconnect-safe — re-subscribing replays the
+    whole log so the client can rebuild state."""
+    repo = playbook.normalize_repo_url(repo)
+    job = jobs().get(repo)
+    if job is None:
+        raise HTTPException(status_code=404, detail="no generation job for this repo")
+    return StreamingResponse(jobs().subscribe(job),
+                             media_type="text/event-stream", headers=_SSE_HEADERS)
+
+
+@app.get("/api/playbook/jobs")
+def playbook_jobs_status() -> dict:
+    """Repos currently generating — lets Explore show a live 'generating…' badge."""
+    return {"running": jobs().running_repos()}
+
+
 @app.post("/api/playbook/stream")
 def playbook_stream(body: PlaybookBody) -> StreamingResponse:
-    """Server-Sent Events: stream the playbook section-by-section as it's built
-    AND persist it as the durable, agent-readable knowledge for the repo.
-
-    Persistence happens here (single-threaded, as events arrive): the bundle row
-    is created on `meta`, domain+principles written on `domain`, and each full
-    document saved on its `doc` event — so a doc is queryable the moment it lands.
-    Each SSE line is `data: {json}\\n\\n`; errors arrive as an `error` event (we
-    can't change the HTTP status once 200 + headers have been sent)."""
-    import json
-
-    store = playbook_store()
-
-    def gen():
-        pid = None
-        repo = body.repo_url
-        principles: list = []
-        try:
-            for ev in playbook.build_stream_from_url(body.repo_url, llm=body.llm):
-                e = ev.get("event")
-                if e == "meta":
-                    repo = ev["repo"]
-                    pid = store.create_playbook(repo, llm=bool(ev.get("llm")))
-                elif e == "conventions" and pid is not None:
-                    principles = list(ev.get("items", []))
-                    store.update_playbook(pid, principles=principles)
-                elif e == "principle" and pid is not None:
-                    principles.append(ev["item"])
-                    store.update_playbook(pid, principles=principles)
-                elif e == "domain" and pid is not None:
-                    d = ev.get("domain", {})
-                    store.update_playbook(pid, mermaid=d.get("mermaid"),
-                                          entities=d.get("entities", []))
-                elif e == "doc" and pid is not None:
-                    store.save_doc(pid, repo=repo, kind=ev["kind"], slug=ev["slug"],
-                                   title=ev["title"], summary=ev.get("summary", ""),
-                                   markdown=ev["markdown"],
-                                   principles=ev.get("principles", []))
-                    ev = {k: v for k, v in ev.items() if k != "markdown"}  # keep SSE light
-                yield f"data: {json.dumps(ev)}\n\n"
-        except ValueError as e:
-            yield f"data: {json.dumps({'event': 'error', 'status': 400, 'detail': str(e)})}\n\n"
-        except RuntimeError as e:
-            yield f"data: {json.dumps({'event': 'error', 'status': 502, 'detail': str(e)})}\n\n"
-        except Exception as e:  # noqa: BLE001 — surface anything else to the client
-            yield f"data: {json.dumps({'event': 'error', 'status': 500, 'detail': str(e)[:300]})}\n\n"
-
-    return StreamingResponse(gen(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache",
-                                      "X-Accel-Buffering": "no"})
+    """Back-compat one-shot: start the job and stream it in a single request.
+    (The decoupled flow is POST /generate then GET /events.)"""
+    try:
+        repo = playbook.normalize_repo_url(body.repo_url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    job = jobs().start(repo, body.llm)
+    return StreamingResponse(jobs().subscribe(job),
+                             media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 # -- read the persisted knowledge (humans via /doc, agents via the API) -------

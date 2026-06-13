@@ -70,6 +70,7 @@
   .repo-row:hover { border-color:var(--accent); }
   .repo-row .nm { font-weight:600; flex:1; }
   .repo-row .meta { color:var(--muted); font-size:12px; }
+  .genbadge { color:var(--accent); }
 
   /* principles cards */
   .group { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted);
@@ -118,7 +119,7 @@ mermaid.initialize({ startOnLoad:false, theme:'dark', securityLevel:'loose' });
 
 let S = null;  // live playbook state
 
-function go_home(){ history.pushState({}, '', '/'); landing(); }
+function go_home(){ _streamGen++; history.pushState({}, '', '/'); landing(); }
 window.addEventListener('popstate', route);
 function route(){
   const repo = new URLSearchParams(location.search).get('repo');
@@ -141,16 +142,23 @@ async function landing() {
     <div id="repolist"><div class="spin"><div class="dot"></div><span>loading…</span></div></div>`;
   $('repo').addEventListener('keydown', e => { if (e.key === 'Enter') run(); });
   try {
-    const r = await fetch('/api/repos'); const d = await r.json();
+    const [d, jr] = await Promise.all([
+      fetch('/api/repos').then(r => r.json()),
+      fetch('/api/playbook/jobs').then(r => r.json()).catch(() => ({running: []})),
+    ]);
+    const running = new Set(jr.running || []);
     const repos = d.repos || [];
-    $('repolist').innerHTML = repos.length ? repos.map(x => `
-      <div class="repo-row" onclick="viewRepo('${encodeURIComponent(x.repo)}')">
+    // include any running repo not yet in the persisted list
+    running.forEach(r => { if (!repos.some(x => x.repo === r)) repos.unshift({repo: r, n_docs: 0, running: true}); });
+    $('repolist').innerHTML = repos.length ? repos.map(x => {
+      const gen = running.has(x.repo);
+      return `<div class="repo-row" onclick="viewRepo('${encodeURIComponent(x.repo)}')">
         <span class="nm">${esc(shortRepo(x.repo))}</span>
-        <span class="meta">${x.n_docs} docs${x.llm===false?' · offline':''}</span>
+        <span class="meta">${gen ? '<span class="genbadge">● generating…</span>' : (x.n_docs + ' docs' + (x.llm===false?' · offline':''))}</span>
         <button class="mini" title="Regenerate from latest code"
                 onclick="event.stopPropagation(); run('${esc(x.repo)}')">↻ refresh</button>
         <span class="arrow">→</span>
-      </div>`).join('') : `<div class="empty">No repos indexed yet — add one above.</div>`;
+      </div>`; }).join('') : `<div class="empty">No repos indexed yet — add one above.</div>`;
   } catch (e) { $('repolist').innerHTML = `<div class="empty">Could not load indexed repos.</div>`; }
 }
 
@@ -159,6 +167,11 @@ async function viewRepo(repoEnc) {
   const repo = decodeURIComponent(repoEnc);
   history.pushState({}, '', '/?repo=' + encodeURIComponent(repo));
   $('out').innerHTML = `<div class="spin"><div class="dot"></div><span>loading ${esc(shortRepo(repo))}…</span></div>`;
+  // if a generation job is currently running for this repo, attach to it live
+  try {
+    const jr = await (await fetch('/api/playbook/jobs')).json();
+    if ((jr.running || []).includes(repo)) { S = null; return openStream(repo); }
+  } catch (e) {}
   try {
     const r = await fetch('/api/playbook?repo=' + encodeURIComponent(repo));
     if (r.status === 404) return run(repo);          // not indexed → generate
@@ -175,32 +188,62 @@ async function viewRepo(repoEnc) {
   } catch (e) { $('out').innerHTML = `<div class="err">${esc(e.message||e)}</div>`; }
 }
 
-// ---------- Generate (stream) ----------
+// ---------- Generate: start a server-side JOB, then subscribe ----------
+let _streamGen = 0;   // bumps to cancel a previous live stream
+
 async function run(presetRepo) {
   const url = (presetRepo || ($('repo') && $('repo').value) || '').trim();
   if (!url) return;
   S = { repo: url, llm: null, features: [], tech_specs: [], principles: [],
         domain: null, ready: new Set(), active: 'feat' };
   renderShell();
-  setProg('connecting…', true);
+  setProg('starting generation…', true);
   try {
-    const r = await fetch('/api/playbook/stream', { method:'POST',
+    const g = await fetch('/api/playbook/generate', { method:'POST',
       headers:{'Content-Type':'application/json'}, body: JSON.stringify({ repo_url: url }) });
-    if (!r.ok || !r.body) throw new Error('HTTP '+r.status);
-    const reader = r.body.getReader(), dec = new TextDecoder();
-    let buf = '';
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let idx;
-      while ((idx = buf.indexOf('\n\n')) >= 0) {
-        const frame = buf.slice(0, idx); buf = buf.slice(idx + 2);
-        const line = frame.split('\n').find(l => l.startsWith('data:'));
-        if (line) onEvent(JSON.parse(line.slice(5).trim()));
-      }
-    }
+    const gd = await g.json();
+    if (!g.ok) throw new Error(gd.detail || ('HTTP '+g.status));
+    S.repo = gd.repo || url;
+    history.replaceState({}, '', '/?repo=' + encodeURIComponent(S.repo));
+    openStream(S.repo);
   } catch (e) { setProg(`error: ${e.message}`, false, true); }
+}
+
+// Subscribe to a job's event stream. The job runs server-side regardless of this
+// connection, so on a dropped stream we simply reconnect and replay — the server
+// resends the full log and we rebuild state from scratch.
+async function openStream(repo) {
+  const gen = ++_streamGen;
+  let done = false;
+  while (!done && gen === _streamGen) {
+    const active = S ? S.active : 'feat', llm = S ? S.llm : null;
+    S = { repo, llm, features: [], tech_specs: [], principles: [],
+          domain: null, ready: new Set(), active };
+    renderShell();
+    try {
+      const r = await fetch('/api/playbook/events?repo=' + encodeURIComponent(repo));
+      if (r.status === 404) { setProg('no active generation for this repo', false, true); return; }
+      if (!r.ok || !r.body) throw new Error('HTTP ' + r.status);
+      const reader = r.body.getReader(), dec = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        const { value, done: d } = await reader.read();
+        if (d) break;
+        if (gen !== _streamGen) { try { reader.cancel(); } catch(e){} return; }
+        buf += dec.decode(value, { stream: true });
+        let idx;
+        while ((idx = buf.indexOf('\n\n')) >= 0) {
+          const frame = buf.slice(0, idx); buf = buf.slice(idx + 2);
+          const line = frame.split('\n').find(l => l.startsWith('data:'));   // ignores ': keepalive'
+          if (line) { const ev = JSON.parse(line.slice(5).trim()); onEvent(ev);
+                      if (ev.event === 'done' || ev.event === 'error') done = true; }
+        }
+      }
+    } catch (e) { /* dropped — fall through to reconnect */ }
+    if (done || gen !== _streamGen) return;
+    setProg('reconnecting…', true);
+    await new Promise(res => setTimeout(res, 2000));
+  }
 }
 
 function onEvent(ev) {
