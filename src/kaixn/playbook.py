@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from kaixn.app import normalize_repo_url
 from kaixn.miner import (
@@ -29,6 +30,10 @@ from kaixn.miner import (
     mine_all,
     mine_semantic_iter,
 )
+
+# Concurrency for the eager full-document pass (one LLM call per feature/spec).
+# Bounded so a big repo doesn't open dozens of sockets at once.
+_DOC_WORKERS = int(os.getenv("KAIXN_DOC_WORKERS", "6"))
 
 
 def _llm_enabled() -> bool:
@@ -61,15 +66,37 @@ def _read_docs(root: pathlib.Path, *, limit: int = 8, per: int = 6000) -> str:
     return "\n\n".join(out)
 
 
-def _llm_json(prompt: str, *, model: str, max_tokens: int = 2048):
+def _llm_call(prompt: str, *, model: str, max_tokens: int) -> str:
+    """One bounded, streamed Anthropic call returning the raw text."""
     from anthropic import Anthropic
 
     client = Anthropic(max_retries=2, timeout=120.0)
     with client.messages.stream(
         model=model, max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}]) as stream:
-        raw = "".join(t for t in stream.text_stream)
+        return "".join(t for t in stream.text_stream)
+
+
+def _llm_json(prompt: str, *, model: str, max_tokens: int = 2048):
+    raw = _llm_call(prompt, model=model, max_tokens=max_tokens)
     return json.loads(raw[raw.find("["): raw.rfind("]") + 1])
+
+
+def _llm_obj(prompt: str, *, model: str, max_tokens: int = 2048) -> dict:
+    """Like _llm_json but for a single JSON object reply."""
+    raw = _llm_call(prompt, model=model, max_tokens=max_tokens)
+    return json.loads(raw[raw.find("{"): raw.rfind("}") + 1])
+
+
+def _llm_text(prompt: str, *, model: str, max_tokens: int = 4096) -> str:
+    """Free-form text reply (e.g. a markdown document)."""
+    return _llm_call(prompt, model=model, max_tokens=max_tokens).strip()
+
+
+def slugify(name: str) -> str:
+    """A short, URL-safe id for a feature/spec within a repo+kind."""
+    s = re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")
+    return (s or "untitled")[:60]
 
 
 # --- principle linking -----------------------------------------------------
@@ -157,6 +184,129 @@ def build_tech_specs(root: pathlib.Path, *, llm: bool, principles: list[dict],
     return specs[:30]
 
 
+# --- full templated documents (PRD / Tech Spec) ----------------------------
+# Classic templates — the human-facing structure each generated doc follows, and
+# the structure an agent can rely on when reading the knowledge back.
+DOC_TEMPLATES: dict[str, list[str]] = {
+    "prd": ["Overview", "Problem & Context", "Goals", "Non-Goals",
+            "User Stories", "Functional Requirements", "UX & Key Flows",
+            "Success Metrics", "Dependencies & Risks"],
+    "spec": ["Context & Background", "Goals", "Non-Goals", "Proposed Design",
+             "Data Model", "APIs & Interfaces", "Key Decisions & Trade-offs",
+             "Sequencing & Rollout", "Risks & Open Questions"],
+}
+_DOC_KIND_NAME = {"prd": "Product Requirements Document (PRD)",
+                  "spec": "Technical Specification"}
+
+
+def build_doc(root: pathlib.Path, *, kind: str, title: str, summary: str = "",
+              llm: bool, model: str = "claude-sonnet-4-6") -> str:
+    """Generate ONE full, classically-templated document (markdown) for a feature
+    (kind='prd') or technical area (kind='spec'), grounded in the repo.
+
+    Offline → a section skeleton so the structure still persists."""
+    sections = DOC_TEMPLATES[kind]
+    if llm:
+        ctx = (_read_docs(root) if kind == "prd"
+               else _source_blob(root, max_files=25, per_file=3000))
+        prompt = (
+            f"Write a {_DOC_KIND_NAME[kind]} for "
+            f"\"{title}\"" + (f" — {summary}" if summary else "") +
+            " of THIS repository. Ground every statement in the actual code/docs "
+            "below; do not invent capabilities the repo doesn't have. Be concrete "
+            "and specific to this codebase (name real modules, types, endpoints). "
+            "Use bullet lists and tables where natural.\n\nStart with a single H1 "
+            "title line, then EXACTLY these H2 sections, in order:\n" +
+            "\n".join(f"## {s}" for s in sections) +
+            "\n\nREPO CONTEXT:\n" + ctx)
+        try:
+            return _llm_text(prompt, model=model, max_tokens=4096)
+        except Exception:
+            pass
+    return (f"# {title}\n\n" + (f"> {summary}\n\n" if summary else "") +
+            "\n\n".join(f"## {s}\n\n_Offline mode — connect an API key to "
+                        "generate this section._" for s in sections))
+
+
+# --- domain model (DDD graph) ----------------------------------------------
+def _clean_mermaid(text: str) -> str:
+    """Strip code fences / prose around a mermaid diagram and ensure it declares
+    a diagram type."""
+    t = (text or "").strip()
+    if "```" in t:                                   # pull out a fenced block
+        parts = t.split("```")
+        for p in parts:
+            p = p.strip()
+            if p.startswith("mermaid"):
+                t = p[len("mermaid"):].strip(); break
+            if p.startswith(("classDiagram", "graph", "flowchart")):
+                t = p; break
+    if not t.startswith(("classDiagram", "graph", "flowchart")):
+        t = "classDiagram\n" + t
+    return t
+
+
+def _domain_offline(root: pathlib.Path) -> dict:
+    """No-LLM domain map: classes + inheritance/association edges from the AST."""
+    import ast
+    names: dict[str, list[str]] = {}      # class -> field annotations (type names)
+    bases: dict[str, list[str]] = {}
+    for p in (x for x in root.rglob("*.py")
+              if not any(d in x.parts for d in (".venv", ".git", "__pycache__", "tests"))):
+        try:
+            tree = ast.parse(p.read_text(encoding="utf-8", errors="ignore"))
+        except (SyntaxError, OSError):
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            fields: list[str] = []
+            for b in node.body:
+                if isinstance(b, ast.AnnAssign) and isinstance(b.target, ast.Name):
+                    ann = getattr(b.annotation, "id", None) or getattr(
+                        getattr(b.annotation, "value", None), "id", None)
+                    fields.append(b.target.id + (f": {ann}" if ann else ""))
+            names[node.name] = fields[:5]
+            bases[node.name] = [b.id for b in node.bases if isinstance(b, ast.Name)]
+    keep = list(names)[:20]
+    lines = ["classDiagram"]
+    for c in keep:
+        body = "".join(f"  +{f}\n" for f in names[c])
+        lines.append(f"class {c} {{\n{body}}}" if body else f"class {c}")
+    for c in keep:
+        for b in bases.get(c, []):
+            if b in names:
+                lines.append(f"{b} <|-- {c}")
+    entities = [{"name": c, "description": ", ".join(names[c]) or "—"} for c in keep]
+    return {"mermaid": "\n".join(lines), "entities": entities}
+
+
+def build_domain(root: pathlib.Path, *, llm: bool,
+                 model: str = "claude-sonnet-4-6") -> dict:
+    """Extract the domain model — key objects and how they interact — as a Mermaid
+    classDiagram plus an entity list. Offline → an AST-derived class graph."""
+    if llm:
+        blob = _source_blob(root, max_files=30, per_file=2500)
+        prompt = (
+            "Extract the DOMAIN MODEL of this codebase: the key domain objects "
+            "(entities, aggregates, value objects, and services) and how they "
+            "interact. Output a Mermaid `classDiagram`: declare each key class with "
+            "its 2-5 most important fields, and the relationships between them — "
+            "association (-->), inheritance (<|--), composition (*--), dependency "
+            "(..>) — each with a short label. Keep to the ~15 most important "
+            "objects. Ground strictly in the code below.\n\n"
+            'Reply JSON: {"mermaid": "classDiagram\\n...", '
+            '"entities": [{"name","description"}]}.\n\nSOURCE:\n' + blob)
+        try:
+            d = _llm_obj(prompt, model=model, max_tokens=2048)
+            d["mermaid"] = _clean_mermaid(d.get("mermaid", ""))
+            d.setdefault("entities", [])
+            return d
+        except Exception:
+            pass
+    return _domain_offline(root)
+
+
 # --- top-level -------------------------------------------------------------
 def build(root: str | pathlib.Path, *, llm: bool | None = None,
           model: str = "claude-sonnet-4-6") -> dict:
@@ -230,13 +380,56 @@ def build_stream(root: str | pathlib.Path, *, llm: bool | None = None,
         except Exception as e:                       # real API down mid-stream
             yield {"event": "status", "step": f"design pass skipped: {str(e)[:120]}"}
 
-    # 3) features + tech specs — now able to link against every mined principle
+    # 3) domain model (DDD graph)
+    if use_llm:
+        yield {"event": "status", "step": "mapping the domain model…"}
+    yield {"event": "domain", "domain": build_domain(root, llm=use_llm, model=model)}
+
+    # 4) feature + tech-spec LISTS — emit immediately (with stable slugs) so the
+    #    UI can show the index while the full docs generate.
     yield {"event": "status", "step": "extracting features & tech specs…"}
-    yield {"event": "features",
-           "items": build_features(root, llm=use_llm, principles=principles, model=model)}
-    yield {"event": "tech_specs",
-           "items": build_tech_specs(root, llm=use_llm, principles=principles, model=model)}
+    features = build_features(root, llm=use_llm, principles=principles, model=model)
+    specs = build_tech_specs(root, llm=use_llm, principles=principles, model=model)
+    items = _with_slugs("prd", [{"title": f.get("name", ""), **f} for f in features]) \
+        + _with_slugs("spec", [{"title": s.get("area", ""), **s} for s in specs])
+    yield {"event": "features", "items": [i for i in items if i["kind"] == "prd"]}
+    yield {"event": "tech_specs", "items": [i for i in items if i["kind"] == "spec"]}
+
+    # 5) full templated documents — generated CONCURRENTLY (this is the heavy part:
+    #    one LLM call per item). Each completes independently; emit as it lands so
+    #    the UI flips that item from "generating" to "ready" and it can be read.
+    yield {"event": "status", "step": f"generating {len(items)} full documents…"}
+
+    def _one(item: dict) -> dict:
+        md = build_doc(root, kind=item["kind"], title=item["title"],
+                       summary=item.get("summary", ""), llm=use_llm, model=model)
+        return {"event": "doc", "kind": item["kind"], "slug": item["slug"],
+                "title": item["title"], "summary": item.get("summary", ""),
+                "principles": item.get("principles", []), "markdown": md}
+
+    with ThreadPoolExecutor(max_workers=_DOC_WORKERS) as pool:
+        futures = {pool.submit(_one, it): it for it in items}
+        for fut in as_completed(futures):
+            try:
+                yield fut.result()
+            except Exception as e:                       # one doc failed — keep going
+                it = futures[fut]
+                yield {"event": "doc_error", "kind": it["kind"], "slug": it["slug"],
+                       "title": it["title"], "detail": str(e)[:160]}
     yield {"event": "done"}
+
+
+def _with_slugs(kind: str, items: list[dict]) -> list[dict]:
+    """Attach a unique, URL-safe slug + kind to each item."""
+    seen: dict[str, int] = {}
+    out: list[dict] = []
+    for it in items:
+        base = slugify(it.get("title", ""))
+        n = seen.get(base, 0)
+        seen[base] = n + 1
+        slug = base if n == 0 else f"{base}-{n + 1}"
+        out.append({**it, "kind": kind, "slug": slug})
+    return out
 
 
 def build_stream_from_url(repo_url: str, *, llm: bool | None = None,

@@ -50,6 +50,7 @@ app.add_middleware(
 )
 
 _service: Kaixn | None = None
+_pstore = None
 
 
 def service() -> Kaixn:
@@ -57,6 +58,17 @@ def service() -> Kaixn:
     if _service is None:
         _service = Kaixn.from_env()
     return _service
+
+
+def playbook_store():
+    """Lazily-built persistence for generated playbooks (Pg if KAIXN_DSN, else
+    in-memory). Single instance reused across requests."""
+    global _pstore
+    if _pstore is None:
+        from kaixn import playbook_store as ps
+
+        _pstore = ps.from_env()
+    return _pstore
 
 
 # -- request models ----------------------------------------------------------
@@ -163,16 +175,43 @@ def playbook_endpoint(body: PlaybookBody) -> dict:
 
 @app.post("/api/playbook/stream")
 def playbook_stream(body: PlaybookBody) -> StreamingResponse:
-    """Server-Sent Events: stream the playbook section-by-section as it's built,
-    so the UI fills in live instead of blocking on one ~3-min request.
+    """Server-Sent Events: stream the playbook section-by-section as it's built
+    AND persist it as the durable, agent-readable knowledge for the repo.
 
-    Each line is `data: {json}\\n\\n`. Errors arrive as an `error` event (we can't
-    set an HTTP status mid-stream once 200 + headers have been sent)."""
+    Persistence happens here (single-threaded, as events arrive): the bundle row
+    is created on `meta`, domain+principles written on `domain`, and each full
+    document saved on its `doc` event — so a doc is queryable the moment it lands.
+    Each SSE line is `data: {json}\\n\\n`; errors arrive as an `error` event (we
+    can't change the HTTP status once 200 + headers have been sent)."""
     import json
 
+    store = playbook_store()
+
     def gen():
+        pid = None
+        repo = body.repo_url
+        principles: list = []
         try:
             for ev in playbook.build_stream_from_url(body.repo_url, llm=body.llm):
+                e = ev.get("event")
+                if e == "meta":
+                    repo = ev["repo"]
+                    pid = store.create_playbook(repo, llm=bool(ev.get("llm")))
+                elif e == "conventions":
+                    principles = list(ev.get("items", []))
+                elif e == "principle":
+                    principles.append(ev["item"])
+                elif e == "domain" and pid is not None:
+                    d = ev.get("domain", {})
+                    store.update_playbook(pid, mermaid=d.get("mermaid"),
+                                          entities=d.get("entities", []),
+                                          principles=principles)
+                elif e == "doc" and pid is not None:
+                    store.save_doc(pid, repo=repo, kind=ev["kind"], slug=ev["slug"],
+                                   title=ev["title"], summary=ev.get("summary", ""),
+                                   markdown=ev["markdown"],
+                                   principles=ev.get("principles", []))
+                    ev = {k: v for k, v in ev.items() if k != "markdown"}  # keep SSE light
                 yield f"data: {json.dumps(ev)}\n\n"
         except ValueError as e:
             yield f"data: {json.dumps({'event': 'error', 'status': 400, 'detail': str(e)})}\n\n"
@@ -184,6 +223,35 @@ def playbook_stream(body: PlaybookBody) -> StreamingResponse:
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",
                                       "X-Accel-Buffering": "no"})
+
+
+# -- read the persisted knowledge (humans via /doc, agents via the API) -------
+@app.get("/api/repos")
+def list_repos() -> dict:
+    """Every indexed repo — backs the Explore view and agent discovery."""
+    return {"repos": playbook_store().list_repos()}
+
+
+@app.get("/api/playbook")
+def get_playbook(repo: str) -> dict:
+    """The full knowledge bundle for a repo (domain + principles + doc index).
+
+    This is the agent-readable surface: read it back to evaluate a proposed PRD
+    or a posted PR against what the codebase actually is."""
+    pb = playbook_store().get_playbook(playbook.normalize_repo_url(repo))
+    if pb is None:
+        raise HTTPException(status_code=404, detail="repo not indexed")
+    return pb
+
+
+@app.get("/api/doc")
+def get_doc(repo: str, kind: str, slug: str) -> dict:
+    """One generated document (full markdown). 404 if it hasn't been generated
+    yet — the doc page polls until it appears."""
+    doc = playbook_store().get_doc(playbook.normalize_repo_url(repo), kind, slug)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="not generated yet")
+    return doc
 
 
 # -- waitlist (public marketing site posts here) -----------------------------
@@ -233,6 +301,13 @@ async def join_waitlist(request: Request) -> dict | RedirectResponse:
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(_STATIC / "playbook.html")
+
+
+@app.get("/doc")
+def doc_page() -> FileResponse:
+    """A generated PRD / Tech Spec at its own shareable URL (params in the query
+    string: ?repo=&kind=&slug=). The page fetches /api/doc and renders it."""
+    return FileResponse(_STATIC / "doc.html")
 
 
 @app.get("/classic")

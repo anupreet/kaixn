@@ -3,15 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>kaixn — Playbook</title>
+<title>kaixn</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 <style>
   :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --fg:#e6edf3;
           --muted:#8b949e; --accent:#58a6ff; --good:#3fb950; --warn:#d29922; }
   * { box-sizing: border-box; }
   body { margin:0; font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
          background:var(--bg); color:var(--fg); }
-  header { padding:22px 28px; border-bottom:1px solid var(--line); }
-  h1 { margin:0; font-size:20px; letter-spacing:-.01em; }
+  header { padding:20px 28px; border-bottom:1px solid var(--line); }
+  h1 { margin:0; font-size:20px; letter-spacing:-.01em; cursor:pointer; display:inline-block; }
   h1 small { color:var(--muted); font-weight:400; font-size:14px; margin-left:8px; }
   .wrap { max-width:1000px; margin:0 auto; padding:24px 28px 80px; }
   .bar { display:flex; gap:10px; margin-bottom:6px; }
@@ -22,29 +23,56 @@
            border-radius:8px; font-weight:600; cursor:pointer; }
   button:disabled { opacity:.55; cursor:default; }
   .hint { color:var(--muted); font-size:13px; margin:2px 0 22px; }
+  .section-label { font-size:12px; text-transform:uppercase; letter-spacing:.08em;
+                   color:var(--muted); margin:30px 0 12px; }
   .spin { display:flex; align-items:center; gap:12px; color:var(--muted); padding:30px 0; }
   .dot { width:14px; height:14px; border:2px solid var(--line); border-top-color:var(--accent);
          border-radius:50%; animation:spin .8s linear infinite; }
   @keyframes spin { to { transform:rotate(360deg); } }
   .err { color:#f85149; background:#23090b; border:1px solid #5c1a1d; padding:12px 14px; border-radius:8px; }
-  .repohead { display:flex; align-items:center; gap:12px; margin:4px 0 18px; flex-wrap:wrap; }
+  .repohead { display:flex; align-items:center; gap:12px; margin:4px 0 8px; flex-wrap:wrap; }
   .repohead .name { font-size:18px; font-weight:600; }
+  .back { color:var(--accent); text-decoration:none; font-size:13px; }
   .badge { font-size:12px; padding:3px 9px; border-radius:999px; border:1px solid var(--line);
            color:var(--muted); }
   .badge.llm { border-color:#1f6feb; color:var(--accent); }
-  .tabs { display:flex; gap:4px; border-bottom:1px solid var(--line); margin-bottom:20px; }
+  .tabs { display:flex; gap:4px; border-bottom:1px solid var(--line); margin-bottom:20px; flex-wrap:wrap; }
   .tab { padding:10px 16px; cursor:pointer; color:var(--muted); border-bottom:2px solid transparent;
          font-weight:500; }
   .tab.active { color:var(--fg); border-bottom-color:var(--accent); }
   .tab .ct { font-size:12px; color:var(--muted); margin-left:6px; }
   .pane { display:none; } .pane.active { display:block; }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
-          padding:14px 16px; margin-bottom:12px; }
-  .card .t { font-weight:600; }
-  .card .s { color:var(--muted); margin-top:3px; }
-  .ev { color:var(--muted); font-size:12px; margin-top:8px; font-family:ui-monospace,monospace; }
+
+  /* doc list (features / specs) — human, not technical */
+  .doc-row { display:flex; align-items:center; gap:12px; background:var(--panel);
+             border:1px solid var(--line); border-radius:10px; padding:14px 16px;
+             margin-bottom:10px; text-decoration:none; color:var(--fg); transition:border-color .15s; }
+  .doc-row:hover { border-color:var(--accent); }
+  .doc-row .body { flex:1; min-width:0; }
+  .doc-row .t { font-weight:600; }
+  .doc-row .s { color:var(--muted); margin-top:3px; font-size:14px; }
+  .doc-row .st { font-size:12px; flex:none; }
+  .doc-row .st.ready { color:var(--good); }
+  .doc-row .st.gen { color:var(--muted); }
+  .doc-row .arrow { color:var(--muted); flex:none; }
+  .reliesline { margin-top:7px; }
+  .plink { display:inline-block; margin-right:6px; padding:1px 7px; border-radius:999px;
+           border:1px solid #1f6feb; color:var(--accent); font-size:11px; font-family:ui-monospace,monospace; }
+
+  /* explore list */
+  .repo-row { display:flex; align-items:center; gap:12px; background:var(--panel);
+              border:1px solid var(--line); border-radius:10px; padding:13px 16px;
+              margin-bottom:10px; cursor:pointer; }
+  .repo-row:hover { border-color:var(--accent); }
+  .repo-row .nm { font-weight:600; flex:1; }
+  .repo-row .meta { color:var(--muted); font-size:12px; }
+
+  /* principles cards */
   .group { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted);
            margin:22px 0 10px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+          padding:14px 16px; margin-bottom:12px; }
+  .card .s { color:var(--muted); margin-top:3px; }
   .ptop { display:flex; justify-content:space-between; gap:12px; align-items:baseline; }
   .val { color:var(--accent); font-weight:600; }
   .pills { display:flex; gap:6px; align-items:center; flex-shrink:0; }
@@ -54,13 +82,17 @@
   .pill.llm { border-color:#1f6feb; color:var(--accent); }
   .sup { font-family:ui-monospace,monospace; font-size:12px; color:var(--muted); }
   .conv { color:var(--good); } .nconv { color:var(--muted); }
+  .ev { color:var(--muted); font-size:12px; margin-top:8px; font-family:ui-monospace,monospace; }
   .counter { color:var(--warn); font-size:12px; margin-top:6px; font-family:ui-monospace,monospace; }
-  .relies { margin-top:9px; font-size:12px; color:var(--muted); }
-  .plink { display:inline-block; margin-left:6px; padding:2px 8px; border-radius:999px;
-           border:1px solid #1f6feb; color:var(--accent); cursor:pointer;
-           font-family:ui-monospace,monospace; }
-  .plink:hover { background:#0d2440; }
   .empty { color:var(--muted); padding:18px 0; }
+
+  /* domain graph */
+  .mermaid { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+             padding:16px; margin:6px 0 18px; text-align:center; overflow:auto; }
+  .entlist { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:10px; }
+  .ent { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+  .ent .en { font-weight:600; } .ent .ed { color:var(--muted); font-size:12px; margin-top:2px; }
+
   .prog { display:flex; align-items:center; gap:10px; color:var(--muted); font-size:13px;
           margin:2px 0 16px; min-height:18px; }
   .prog.err { color:#f85149; }
@@ -70,32 +102,81 @@
 </style>
 </head>
 <body>
-<header><h1>kaixn <small>· point at a repo, get its reviewable playbook</small></h1></header>
-<div class="wrap">
-  <div class="bar">
-    <input id="repo" placeholder="GitHub repo URL — e.g. https://github.com/encode/starlette"
-           value="https://github.com/encode/starlette">
-    <button id="go" onclick="run()">Generate playbook</button>
-  </div>
-  <div class="hint">Clones the repo and mines it: product features, tech specs, and the
-    engineering design principles it actually follows.</div>
-  <div id="out"></div>
-</div>
+<header><h1 onclick="go_home()">kaixn <small>· product + engineering knowledge, mined from code</small></h1></header>
+<div class="wrap"><div id="out"></div></div>
 
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => (s??"").toString().replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const shortRepo = r => (r||'').replace(/^https?:\/\/github\.com\//,'');
+const docUrl = (repo,kind,slug) => `/doc?repo=${encodeURIComponent(repo)}&kind=${kind}&slug=${encodeURIComponent(slug)}`;
+mermaid.initialize({ startOnLoad:false, theme:'dark', securityLevel:'loose' });
 
-// live state, filled in as the SSE stream arrives
-let S = null;
+let S = null;  // live playbook state
 
-async function run() {
-  const url = $('repo').value.trim();
+function go_home(){ history.pushState({}, '', '/'); landing(); }
+window.addEventListener('popstate', route);
+function route(){
+  const repo = new URLSearchParams(location.search).get('repo');
+  if (repo) viewRepo(repo); else landing();
+}
+
+// ---------- Landing: Add or Explore ----------
+async function landing() {
+  S = null;
+  $('out').innerHTML = `
+    <div class="section-label">Add a repo</div>
+    <div class="bar">
+      <input id="repo" placeholder="GitHub repo URL — e.g. https://github.com/encode/starlette"
+             value="https://github.com/encode/starlette">
+      <button id="go" onclick="run()">Generate</button>
+    </div>
+    <div class="hint">Clones the repo and generates its full playbook: PRDs, tech specs,
+      a domain model, and the engineering principles it actually follows — then stores it.</div>
+    <div class="section-label">Explore indexed repos</div>
+    <div id="repolist"><div class="spin"><div class="dot"></div><span>loading…</span></div></div>`;
+  $('repo').addEventListener('keydown', e => { if (e.key === 'Enter') run(); });
+  try {
+    const r = await fetch('/api/repos'); const d = await r.json();
+    const repos = d.repos || [];
+    $('repolist').innerHTML = repos.length ? repos.map(x => `
+      <div class="repo-row" onclick="viewRepo('${encodeURIComponent(x.repo)}')">
+        <span class="nm">${esc(shortRepo(x.repo))}</span>
+        <span class="meta">${x.n_docs} docs${x.llm===false?' · offline':''}</span>
+        <span class="arrow">→</span>
+      </div>`).join('') : `<div class="empty">No repos indexed yet — add one above.</div>`;
+  } catch (e) { $('repolist').innerHTML = `<div class="empty">Could not load indexed repos.</div>`; }
+}
+
+// ---------- View an already-indexed repo (no regeneration) ----------
+async function viewRepo(repoEnc) {
+  const repo = decodeURIComponent(repoEnc);
+  history.pushState({}, '', '/?repo=' + encodeURIComponent(repo));
+  $('out').innerHTML = `<div class="spin"><div class="dot"></div><span>loading ${esc(shortRepo(repo))}…</span></div>`;
+  try {
+    const r = await fetch('/api/playbook?repo=' + encodeURIComponent(repo));
+    if (r.status === 404) return run(repo);          // not indexed → generate
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const pb = await r.json();
+    S = { repo: pb.repo, llm: pb.llm, active: 'feat', ready: new Set(),
+          domain: { mermaid: pb.mermaid, entities: pb.entities || [] },
+          principles: pb.principles || [],
+          features: (pb.docs||[]).filter(d => d.kind==='prd'),
+          tech_specs: (pb.docs||[]).filter(d => d.kind==='spec') };
+    (pb.docs||[]).forEach(d => S.ready.add(d.kind + ':' + d.slug));
+    renderShell();
+    setProg(`indexed · ${(pb.docs||[]).length} documents`, false);
+  } catch (e) { $('out').innerHTML = `<div class="err">${esc(e.message||e)}</div>`; }
+}
+
+// ---------- Generate (stream) ----------
+async function run(presetRepo) {
+  const url = (presetRepo || ($('repo') && $('repo').value) || '').trim();
   if (!url) return;
-  const go = $('go'); go.disabled = true;
-  S = { repo: url, llm: null, features: [], tech_specs: [], principles: [], active: 'prin' };
-  renderShell(true);
-  setProg("connecting…", true);
+  S = { repo: url, llm: null, features: [], tech_specs: [], principles: [],
+        domain: null, ready: new Set(), active: 'feat' };
+  renderShell();
+  setProg('connecting…', true);
   try {
     const r = await fetch('/api/playbook/stream', { method:'POST',
       headers:{'Content-Type':'application/json'}, body: JSON.stringify({ repo_url: url }) });
@@ -107,28 +188,34 @@ async function run() {
       if (done) break;
       buf += dec.decode(value, { stream: true });
       let idx;
-      while ((idx = buf.indexOf('\n\n')) >= 0) {       // one SSE frame
+      while ((idx = buf.indexOf('\n\n')) >= 0) {
         const frame = buf.slice(0, idx); buf = buf.slice(idx + 2);
         const line = frame.split('\n').find(l => l.startsWith('data:'));
         if (line) onEvent(JSON.parse(line.slice(5).trim()));
       }
     }
-  } catch (e) {
-    setProg(`error: ${esc(e.message)}`, false, true);
-  } finally { go.disabled = false; }
+  } catch (e) { setProg(`error: ${e.message}`, false, true); }
 }
 
 function onEvent(ev) {
   switch (ev.event) {
-    case 'meta':        S.llm = ev.llm; S.repo = ev.repo || S.repo; renderShell(true); break;
+    case 'meta':
+      S.llm = ev.llm; S.repo = ev.repo || S.repo;
+      history.replaceState({}, '', '/?repo=' + encodeURIComponent(S.repo));
+      renderShell(); break;
     case 'status':      setProg(ev.step, true); break;
     case 'conventions': S.principles = (ev.items||[]).concat(S.principles); refresh('prin'); break;
     case 'principle':   S.principles.push(ev.item); refresh('prin');
                         setProg(`verified design axis: ${ev.item.axis} (${ev.item.support})`, true); break;
+    case 'domain':      S.domain = ev.domain; refresh('dom'); break;
     case 'features':    S.features = ev.items||[]; refresh('feat'); break;
     case 'tech_specs':  S.tech_specs = ev.items||[]; refresh('tech'); break;
-    case 'done':        setProg('done — playbook complete', false); break;
-    case 'error':       setProg(`error: ${esc(ev.detail||('HTTP '+ev.status))}`, false, true); break;
+    case 'doc':         S.ready.add(ev.kind + ':' + ev.slug);
+                        refresh(ev.kind==='prd' ? 'feat' : 'tech');
+                        setProg(`generated: ${ev.title}`, true); break;
+    case 'doc_error':   setProg(`doc failed: ${ev.title}`, true); break;
+    case 'done':        setProg('complete — all documents stored', false); break;
+    case 'error':       setProg(`error: ${ev.detail||('HTTP '+ev.status)}`, false, true); break;
   }
 }
 
@@ -136,76 +223,94 @@ function setProg(text, busy, err) {
   const p = $('prog'); if (!p) return;
   p.className = err ? 'prog err' : 'prog';
   p.innerHTML = (busy ? `<span class="dot"></span>` : (err ? '' : `<span class="tick">✓</span>`)) +
-                `<span>${err ? text : esc(text)}</span>`;
+                `<span>${esc(text)}</span>`;
 }
 
-function renderShell(reset) {
+// ---------- Render ----------
+function renderShell() {
   const f = S.features, t = S.tech_specs, p = S.principles;
-  const llmBadge = S.llm == null ? '' : (S.llm ? `<span class="badge llm">LLM analysis</span>`
-                                                : `<span class="badge">offline mode</span>`);
+  const llmBadge = S.llm == null ? '' : (S.llm ? `<span class="badge llm">LLM</span>`
+                                                : `<span class="badge">offline</span>`);
   $('out').innerHTML = `
-    <div class="repohead"><span class="name">${esc(S.repo||'repo')}</span>${llmBadge}</div>
+    <div><a class="back" href="#" onclick="go_home();return false">← all repos</a></div>
+    <div class="repohead"><span class="name">${esc(shortRepo(S.repo)||'repo')}</span>${llmBadge}</div>
     <div id="prog" class="prog"></div>
     <div class="tabs">
-      <div class="tab ${S.active==='feat'?'active':''}" data-t="feat" onclick="tab('feat')">Features / PRDs<span class="ct" id="c-feat">${f.length}</span></div>
-      <div class="tab ${S.active==='tech'?'active':''}" data-t="tech" onclick="tab('tech')">Tech Specs<span class="ct" id="c-tech">${t.length}</span></div>
-      <div class="tab ${S.active==='prin'?'active':''}" data-t="prin" onclick="tab('prin')">Engineering Design Principles<span class="ct" id="c-prin">${p.length}</span></div>
+      ${tabBtn('feat','PRDs', f.length)}
+      ${tabBtn('tech','Tech Specs', t.length)}
+      ${tabBtn('dom','Domain Model', '')}
+      ${tabBtn('prin','Engineering Principles', p.length)}
     </div>
-    <div id="feat" class="pane ${S.active==='feat'?'active':''}">${renderFeatures(f)}</div>
-    <div id="tech" class="pane ${S.active==='tech'?'active':''}">${renderTech(t)}</div>
-    <div id="prin" class="pane ${S.active==='prin'?'active':''}">${renderPrinciples(p)}</div>`;
+    <div id="feat" class="pane ${cls('feat')}">${renderDocs(f,'prd')}</div>
+    <div id="tech" class="pane ${cls('tech')}">${renderDocs(t,'spec')}</div>
+    <div id="dom"  class="pane ${cls('dom')}">${renderDomain()}</div>
+    <div id="prin" class="pane ${cls('prin')}">${renderPrinciples(p)}</div>`;
+  if (S.active === 'dom') runMermaid();
 }
+const cls = n => S.active===n ? 'active' : '';
+const tabBtn = (n,label,ct) => `<div class="tab ${cls(n)}" data-t="${n}" onclick="tab('${n}')">${label}${ct!==''?`<span class="ct" id="c-${n}">${ct}</span>`:''}</div>`;
 
 function refresh(pane) {
-  const map = { feat: ['feat', renderFeatures, S.features],
-                tech: ['tech', renderTech, S.tech_specs],
-                prin: ['prin', renderPrinciples, S.principles] };
-  const [id, fn, data] = map[pane];
-  const el = $(id); if (el) el.innerHTML = fn(data);
-  const ct = $('c-'+id); if (ct) ct.textContent = data.length;
+  if (pane==='dom') { const el=$('dom'); if (el){ el.innerHTML = renderDomain(); if (S.active==='dom') runMermaid(); } return; }
+  const map = { feat:[renderDocs, S.features, 'prd'], tech:[renderDocs, S.tech_specs, 'spec'], prin:[renderPrinciples, S.principles] };
+  const [fn, data, kind] = map[pane];
+  const el = $(pane); if (el) el.innerHTML = kind ? fn(data, kind) : fn(data);
+  const ct = $('c-'+pane); if (ct) ct.textContent = data.length;
 }
 
 function tab(name) {
   if (S) S.active = name;
   document.querySelectorAll('.tab').forEach(e => e.classList.toggle('active', e.dataset.t===name));
   document.querySelectorAll('.pane').forEach(e => e.classList.toggle('active', e.id===name));
+  if (name==='dom') runMermaid();
 }
 
-function links(principles) {
-  if (!principles || !principles.length) return '';
-  const pills = principles.map(a =>
-    `<span class="plink" onclick="tab('prin')" title="see in Engineering Design Principles">${esc(a)}</span>`).join('');
-  return `<div class="relies">relies on ${pills}</div>`;
+function principleLinks(ps) {
+  if (!ps || !ps.length) return '';
+  return `<div class="reliesline">` + ps.map(a => `<span class="plink">${esc(a)}</span>`).join('') + `</div>`;
 }
 
-function renderFeatures(f) {
-  if (!f.length) return `<div class="empty">No features surfaced.</div>`;
-  return f.map(x => `<div class="card">
-    <div class="t">${esc(x.name)}</div>
-    ${x.summary ? `<div class="s">${esc(x.summary)}</div>`:''}
-    ${x.evidence ? `<div class="ev">${esc(x.evidence)}</div>`:''}
-    ${links(x.principles)}</div>`).join('');
+function renderDocs(items, kind) {
+  if (!items.length) return `<div class="empty">${S.llm===null?'generating…':'none surfaced.'}</div>`;
+  return items.map(x => {
+    const title = x.title || x.name || x.area || 'untitled';
+    const ready = S.ready.has(kind + ':' + x.slug);
+    const st = ready ? `<span class="st ready">✓ ready</span>` : `<span class="st gen">⏳ generating…</span>`;
+    return `<a class="doc-row" href="${docUrl(S.repo, kind, x.slug)}">
+      <div class="body">
+        <div class="t">${esc(title)}</div>
+        ${x.summary ? `<div class="s">${esc(x.summary)}</div>`:''}
+        ${principleLinks(x.principles)}
+      </div>${st}<span class="arrow">→</span></a>`;
+  }).join('');
 }
 
-function renderTech(t) {
-  if (!t.length) return `<div class="empty">No tech-spec items surfaced.</div>`;
-  return t.map(x => `<div class="card">
-    <div class="t">${esc(x.area)}${x.decision?` — <span class="val">${esc(x.decision)}</span>`:''}</div>
-    ${x.rationale ? `<div class="s">${esc(x.rationale)}</div>`:''}
-    ${x.evidence ? `<div class="ev">${esc(x.evidence)}</div>`:''}
-    ${links(x.principles)}</div>`).join('');
+function renderDomain() {
+  if (!S.domain) return `<div class="empty">mapping the domain model…</div>`;
+  const ents = (S.domain.entities||[]).map(e =>
+    `<div class="ent"><div class="en">${esc(e.name)}</div><div class="ed">${esc(e.description||'')}</div></div>`).join('');
+  return `<div class="mermaid" id="ddd">${esc(S.domain.mermaid||'')}</div>
+    ${ents ? `<div class="section-label">Key objects</div><div class="entlist">${ents}</div>`:''}`;
+}
+function runMermaid() {
+  const el = $('ddd'); if (!el || !S.domain) return;
+  if (el.dataset.done) return;
+  el.removeAttribute('data-processed');
+  el.textContent = S.domain.mermaid || '';
+  try { mermaid.run({ nodes: [el] }).then(()=>{ el.dataset.done='1'; })
+        .catch(()=>{ el.innerHTML = `<pre style="text-align:left">${esc(S.domain.mermaid||'')}</pre>`; }); }
+  catch(e) { el.innerHTML = `<pre style="text-align:left">${esc(S.domain.mermaid||'')}</pre>`; }
 }
 
 function renderPrinciples(p) {
-  if (!p.length) return `<div class="empty">No principles mined.</div>`;
+  if (!p.length) return `<div class="empty">no principles mined.</div>`;
   const design = p.filter(x => x.method && x.method.startsWith('llm'));
   const conv = p.filter(x => !(x.method && x.method.startsWith('llm')));
   let h = '';
-  if (design.length) h += `<div class="group">Design &amp; architecture (LLM)</div>` + design.map(card).join('');
+  if (design.length) h += `<div class="group">Design &amp; architecture</div>` + design.map(card).join('');
   if (conv.length) h += `<div class="group">Conventions (deterministic · exact support)</div>` + conv.map(card).join('');
   return h;
 }
-
 function card(x) {
   const tierCls = x.tier==='governed' ? 'gov' : 'adv';
   const conv = x.convention ? `<span class="conv">✅ convention</span>` : `<span class="nconv">— below threshold</span>`;
@@ -225,6 +330,8 @@ function card(x) {
     ${ce ? `<div class="counter">counterexamples: ${ce}</div>`:''}
   </div>`;
 }
+
+route();   // boot: ?repo= → view, else landing
 </script>
 </body>
 </html>
