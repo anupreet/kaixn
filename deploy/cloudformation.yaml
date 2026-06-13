@@ -283,6 +283,11 @@ Resources:
       Scheme: internet-facing
       Subnets: [!Ref SubnetA, !Ref SubnetB]
       SecurityGroups: [!Ref AlbSg]
+      # The playbook SSE endpoint makes long LLM calls that emit no bytes for a
+      # while; the default 60s idle timeout closes the connection mid-stream and
+      # the generation is cancelled (docs never persist). 600s covers it.
+      LoadBalancerAttributes:
+        - { Key: idle_timeout.timeout_seconds, Value: "600" }
   TargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
