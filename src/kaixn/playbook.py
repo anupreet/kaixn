@@ -353,40 +353,28 @@ def _clone(url: str) -> str:
 
 def build_stream(root: str | pathlib.Path, *, llm: bool | None = None,
                  model: str = "claude-sonnet-4-6"):
-    """Generator that yields the playbook in pieces, fastest-first, so the UI can
-    render it as it's produced instead of waiting for the whole thing:
+    """Generator that yields the playbook in pieces, with the human-facing
+    documents FIRST (they're the point of this interface), then the slower
+    analysis:
 
-      meta → conventions (instant) → status → one `principle` per verified design
-      axis → features → tech_specs → done
+      meta → conventions (instant) → feature/spec LISTS → one `doc` per generated
+      PRD/Tech Spec (concurrent) → `principle` per verified design axis → domain →
+      done
 
-    The slow design-axis verify loop streams one card at a time — the wait becomes
-    a live-filling page. Each yielded value is a JSON-serializable event dict."""
+    Ordering rationale: the default view is PRDs, so the lists must appear within
+    seconds and their full docs stream in next — not after a ~2-min design pass.
+    The design principles + domain model fill their own tabs afterwards. Each
+    yielded value is a JSON-serializable event dict."""
     root = pathlib.Path(root)
     use_llm = _llm_enabled() if llm is None else llm
     yield {"event": "meta", "llm": use_llm}
 
-    # 1) deterministic conventions — instant, no API
+    # 1) deterministic conventions — instant, no API (seeds principle links)
     principles: list[dict] = [_obs_dict(o) for o in mine(root)]
     yield {"event": "conventions", "items": principles}
 
-    # 2) design/architecture axes — propose (one call), then one card per verify
-    if use_llm:
-        yield {"event": "status", "step": "analyzing architecture & design (LLM)…"}
-        try:
-            for o in mine_semantic_iter(root, model=model):
-                d = _obs_dict(o)
-                principles.append(d)
-                yield {"event": "principle", "item": d}
-        except Exception as e:                       # real API down mid-stream
-            yield {"event": "status", "step": f"design pass skipped: {str(e)[:120]}"}
-
-    # 3) domain model (DDD graph)
-    if use_llm:
-        yield {"event": "status", "step": "mapping the domain model…"}
-    yield {"event": "domain", "domain": build_domain(root, llm=use_llm, model=model)}
-
-    # 4) feature + tech-spec LISTS — emit immediately (with stable slugs) so the
-    #    UI can show the index while the full docs generate.
+    # 2) feature + tech-spec LISTS — emit immediately (stable slugs) so the
+    #    default PRDs/Tech-Specs tabs populate within seconds.
     yield {"event": "status", "step": "extracting features & tech specs…"}
     features = build_features(root, llm=use_llm, principles=principles, model=model)
     specs = build_tech_specs(root, llm=use_llm, principles=principles, model=model)
@@ -395,9 +383,8 @@ def build_stream(root: str | pathlib.Path, *, llm: bool | None = None,
     yield {"event": "features", "items": [i for i in items if i["kind"] == "prd"]}
     yield {"event": "tech_specs", "items": [i for i in items if i["kind"] == "spec"]}
 
-    # 5) full templated documents — generated CONCURRENTLY (this is the heavy part:
-    #    one LLM call per item). Each completes independently; emit as it lands so
-    #    the UI flips that item from "generating" to "ready" and it can be read.
+    # 3) full templated documents — generated CONCURRENTLY (the heavy part: one
+    #    LLM call per item). Emit as each lands so its row flips to "ready".
     yield {"event": "status", "step": f"generating {len(items)} full documents…"}
 
     def _one(item: dict) -> dict:
@@ -416,6 +403,23 @@ def build_stream(root: str | pathlib.Path, *, llm: bool | None = None,
                 it = futures[fut]
                 yield {"event": "doc_error", "kind": it["kind"], "slug": it["slug"],
                        "title": it["title"], "detail": str(e)[:160]}
+
+    # 4) design/architecture principles — propose + verify-by-sampling (the slow
+    #    pass), streamed one card at a time into the Principles tab.
+    if use_llm:
+        yield {"event": "status", "step": "analyzing architecture & design (LLM)…"}
+        try:
+            for o in mine_semantic_iter(root, model=model):
+                d = _obs_dict(o)
+                principles.append(d)
+                yield {"event": "principle", "item": d}
+        except Exception as e:                       # real API down mid-stream
+            yield {"event": "status", "step": f"design pass skipped: {str(e)[:120]}"}
+
+    # 5) domain model (DDD graph)
+    if use_llm:
+        yield {"event": "status", "step": "mapping the domain model…"}
+    yield {"event": "domain", "domain": build_domain(root, llm=use_llm, model=model)}
     yield {"event": "done"}
 
 
