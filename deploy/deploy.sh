@@ -49,7 +49,9 @@ aws cloudformation deploy \
       KaixnEmbedder="$EMBEDDER" \
       AnthropicApiKey="${ANTHROPIC_API_KEY:-}" \
       OpenAiApiKey="${OPENAI_API_KEY:-}" \
-      DBPassword="$DB_PASSWORD"
+      DBPassword="$DB_PASSWORD" \
+      DomainName="${DOMAIN_NAME:-}" \
+      HostedZoneId="${HOSTED_ZONE_ID:-}"
 
 URL="$(aws cloudformation describe-stacks --region "$REGION" --stack-name "$STACK" \
         --query "Stacks[0].Outputs[?OutputKey=='Url'].OutputValue" --output text)"

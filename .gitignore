@@ -13,3 +13,6 @@ venv/
 
 # macOS
 .DS_Store
+
+# Local deploy secret
+deploy/.db_password.local
