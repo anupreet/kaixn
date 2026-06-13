@@ -172,7 +172,7 @@ concurrency_safety:
 mutation_invariants:
   - {id: mut-no-direct,      rule: "persisted-record status changes only via set_status/supersede; no direct field assignment", enforce: "custom-check:no-direct-mutation", enforceable: invariant}
   - {id: mut-state-machine,  rule: "valid status transitions enumerated; guards reference the enum", enforce: "test:state-transitions", enforceable: invariant}
-  - {id: mut-duplicate,      rule: "duplicate write policy is explicit and uniform: <upsert|raise|skip> (RESOLVE)", enforce: "test:duplicate-policy", enforceable: invariant}
+  - {id: mut-duplicate,      rule: "duplicate write: deterministic (same derived content) → upsert (idempotent); non-deterministic collision → raise", enforce: "test:duplicate-policy", enforceable: invariant}
 
 privacy_naming:
   - {id: priv-module-extract,rule: "private helper earns its own _<name>.py when large or reused", enforce: "human", enforceable: convention}
@@ -191,4 +191,4 @@ fallback_shape:
 
 # Generation-grade axes are the per-PR gate's mechanical checklist. invariant axes
 # COMPILE to the gate (mypy-strict config + ruff selection + custom checks + tests);
-# convention axes remain LLM/human judgment. Open RESOLVE: mut-duplicate policy.
+# convention axes remain LLM/human judgment.
