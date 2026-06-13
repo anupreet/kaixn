@@ -265,3 +265,11 @@ guideline_portable:
   - {id: ai-contribution-process, rule: "AI-assisted contributions follow the same process, style, and review as human ones", enforce: "human", enforceable: convention}
   - {id: ai-code-human-review,    rule: "A human reviews all AI-generated code before submission", enforce: "human", enforceable: convention}
   - {id: contribution-accountability, rule: "A named human takes full responsibility for each contribution regardless of tooling", enforce: "human", enforceable: convention}
+
+# === design-tier axes (meta-discovery: encode/starlette) ===
+# Discovered by the design-playbook run — patterns stronger than the base catalog
+# captured. This is the compounding loop: every repo mined teaches the catalog.
+design_meta_discovered:
+  - {id: extension-seam-uniformity, q: "Does the system extend through ONE uniform contract (a single seam type) or many bespoke plugin points?", values: [uniform-seam, mixed, bespoke-per-extension], extractor: llm, source: meta, tier: governed, enforce: "human", enforceable: convention}
+  - {id: opinionation-level,        q: "Does this layer enforce policy (envelopes, error schemas, validation libs) or deliberately defer it downstream?", values: [opinionated, deferred, mixed], extractor: llm, source: meta, tier: governed, enforce: "human", enforceable: convention}
+  - {id: single-consumption-guard,  q: "Are consume-once resources (streams, request bodies) engineered re-read-safe (memoized/guarded) rather than assumed repeatable?", values: [memoized-guarded, raises-on-reconsume, unguarded], extractor: llm, source: meta, tier: governed, enforce: "human", enforceable: convention}
