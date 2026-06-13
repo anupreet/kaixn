@@ -53,6 +53,7 @@ aws cloudformation deploy \
       DomainName="${DOMAIN_NAME:-}" \
       WwwDomain="${WWW_DOMAIN:-}" \
       ApexDomain="${APEX_DOMAIN:-}" \
+      ApexRedirectHost="${APEX_REDIRECT_HOST:-}" \
       HostedZoneId="${HOSTED_ZONE_ID:-}"
 
 URL="$(aws cloudformation describe-stacks --region "$REGION" --stack-name "$STACK" \

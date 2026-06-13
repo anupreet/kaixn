@@ -48,6 +48,12 @@ Parameters:
     Type: String
     Default: ""
     Description: Optional apex alias (e.g. kaixn.com).
+  ApexRedirectHost:
+    Type: String
+    Default: ""
+    Description: >
+      If set, the apex host is 301-redirected to this host (e.g. kaixn.webflow.io)
+      instead of serving the app. Blank = apex serves the app.
   HostedZoneId:
     Type: String
     Default: ""
@@ -57,6 +63,9 @@ Conditions:
   HasDomain: !Not [!Equals [!Ref DomainName, ""]]
   HasWww: !Not [!Equals [!Ref WwwDomain, ""]]
   HasApex: !Not [!Equals [!Ref ApexDomain, ""]]
+  HasApexRedirect: !And
+    - !Condition HasApex
+    - !Not [!Equals [!Ref ApexRedirectHost, ""]]
 
 Resources:
   # --- Network ---------------------------------------------------------------
@@ -344,6 +353,45 @@ Resources:
         - CertificateArn: !Ref Certificate
       DefaultActions:
         - { Type: forward, TargetGroupArn: !Ref TargetGroup }
+
+  # Apex (e.g. kaixn.com) -> external host (e.g. kaixn.webflow.io). Rules on both
+  # listeners so http://apex redirects in one hop too. app/www still serve the app.
+  ApexRedirectHttps:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Condition: HasApexRedirect
+    Properties:
+      ListenerArn: !Ref HttpsListener
+      Priority: 10
+      Conditions:
+        - Field: host-header
+          HostHeaderConfig: { Values: [!Ref ApexDomain] }
+      Actions:
+        - Type: redirect
+          RedirectConfig:
+            Host: !Ref ApexRedirectHost
+            Path: "/"
+            Query: ""
+            Protocol: HTTPS
+            Port: "443"
+            StatusCode: HTTP_301
+  ApexRedirectHttp:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Condition: HasApexRedirect
+    Properties:
+      ListenerArn: !Ref Listener
+      Priority: 10
+      Conditions:
+        - Field: host-header
+          HostHeaderConfig: { Values: [!Ref ApexDomain] }
+      Actions:
+        - Type: redirect
+          RedirectConfig:
+            Host: !Ref ApexRedirectHost
+            Path: "/"
+            Query: ""
+            Protocol: HTTPS
+            Port: "443"
+            StatusCode: HTTP_301
 
   DnsRecord:
     Type: AWS::Route53::RecordSet
