@@ -293,11 +293,30 @@ def _clean_mermaid(text: str) -> str:
     return t
 
 
-def _domain_offline(root: pathlib.Path) -> dict:
-    """No-LLM domain map: classes + inheritance/association edges from the AST."""
+def _ann_type_names(node) -> list[str]:
+    """Identifier names referenced in a type annotation AST — unwraps Optional[X],
+    list[X], dict[K, V], A | B, and `Forward` string refs to their inner names."""
     import ast
-    names: dict[str, list[str]] = {}      # class -> field annotations (type names)
-    bases: dict[str, list[str]] = {}
+    out: list[str] = []
+    for n in ast.walk(node):
+        if isinstance(n, ast.Name):
+            out.append(n.id)
+        elif isinstance(n, ast.Attribute):
+            out.append(n.attr)
+        elif isinstance(n, ast.Constant) and isinstance(n.value, str):
+            out.append(n.value.strip("'\" "))     # forward-ref string annotation
+    return out
+
+
+def _domain_offline(root: pathlib.Path) -> dict:
+    """No-LLM domain map from the AST. Edges come from inheritance (local base),
+    typed fields, and constructor params that reference other local classes — then
+    classes are ranked by connectivity so the graph reads as a connected model,
+    not a row of standalone boxes."""
+    import ast
+    fields: dict[str, list[str]] = {}      # class -> ["name: Type", ...]
+    bases: dict[str, list[str]] = {}       # class -> local base names
+    refs: dict[str, set[str]] = {}         # class -> referenced type names (fields + __init__)
     for p in (x for x in root.rglob("*.py")
               if not any(d in x.parts for d in (".venv", ".git", "__pycache__", "tests"))):
         try:
@@ -307,24 +326,46 @@ def _domain_offline(root: pathlib.Path) -> dict:
         for node in ast.walk(tree):
             if not isinstance(node, ast.ClassDef):
                 continue
-            fields: list[str] = []
+            fs: list[str] = []
+            ref: set[str] = set()
             for b in node.body:
                 if isinstance(b, ast.AnnAssign) and isinstance(b.target, ast.Name):
-                    ann = getattr(b.annotation, "id", None) or getattr(
-                        getattr(b.annotation, "value", None), "id", None)
-                    fields.append(b.target.id + (f": {ann}" if ann else ""))
-            names[node.name] = fields[:5]
+                    tn = _ann_type_names(b.annotation)
+                    fs.append(b.target.id + (f": {tn[0]}" if tn else ""))
+                    ref.update(tn)
+                elif isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef)) and b.name == "__init__":
+                    for a in b.args.args:
+                        if a.annotation is not None:
+                            ref.update(_ann_type_names(a.annotation))
+            fields[node.name] = fs[:5]
             bases[node.name] = [b.id for b in node.bases if isinstance(b, ast.Name)]
-    keep = list(names)[:20]
+            refs[node.name] = ref
+    local = set(fields)
+
+    edges: list[tuple[str, str, str]] = []   # (kind, a, b) → rendered a<|--b or a-->b
+    seen: set[tuple[str, str, str]] = set()
+    for c in fields:
+        for base in bases[c]:
+            if base in local and (e := ("inh", base, c)) not in seen:
+                seen.add(e); edges.append(e)
+        for r in refs[c]:
+            if r in local and r != c and (e := ("assoc", c, r)) not in seen:
+                seen.add(e); edges.append(e)
+
+    degree: dict[str, int] = {c: 0 for c in fields}
+    for _, a, b in edges:
+        degree[a] += 1; degree[b] += 1
+    keep = sorted(fields, key=lambda c: (-degree[c], c))[:20]   # connected first
+    keepset = set(keep)
+
     lines = ["classDiagram"]
     for c in keep:
-        body = "".join(f"  +{f}\n" for f in names[c])
+        body = "".join(f"  +{f}\n" for f in fields[c])
         lines.append(f"class {c} {{\n{body}}}" if body else f"class {c}")
-    for c in keep:
-        for b in bases.get(c, []):
-            if b in names:
-                lines.append(f"{b} <|-- {c}")
-    entities = [{"name": c, "description": ", ".join(names[c]) or "—"} for c in keep]
+    for kind, a, b in edges:
+        if a in keepset and b in keepset:
+            lines.append(f"{a} <|-- {b}" if kind == "inh" else f"{a} --> {b}")
+    entities = [{"name": c, "description": ", ".join(fields[c]) or "—"} for c in keep]
     return {"mermaid": "\n".join(lines), "entities": entities}
 
 
@@ -337,18 +378,27 @@ def build_domain(root: pathlib.Path, *, llm: bool,
         prompt = (
             "Extract the DOMAIN MODEL of this codebase: the key domain objects "
             "(entities, aggregates, value objects, and services) and how they "
-            "interact. Output a Mermaid `classDiagram`: declare each key class with "
-            "its 2-5 most important fields, and the relationships between them — "
-            "association (-->), inheritance (<|--), composition (*--), dependency "
-            "(..>) — each with a short label. Keep to the ~15 most important "
-            "objects. Ground strictly in the code below.\n\n"
-            'Reply JSON: {"mermaid": "classDiagram\\n...", '
+            "interact. Choose the ~12-15 objects that carry the domain — skip "
+            "framework/HTTP request DTOs unless they ARE the domain.\n\n"
+            "Output a Mermaid `classDiagram` with each key class (2-5 important "
+            "fields each) AND — most importantly — the RELATIONSHIPS between them: "
+            "inheritance `Base <|-- Derived`, association `A --> B : label`, "
+            "composition `A *-- B`, dependency `A ..> B : uses`. EVERY class must "
+            "connect to at least one other; a diagram of disconnected classes with "
+            "no edges is WRONG — trace how objects reference, contain, or depend on "
+            "each other in the code and draw those edges. Ground strictly in the "
+            "code below.\n\n"
+            'Reply JSON: {"mermaid": "classDiagram\\n  ClassA --> ClassB : rel\\n  ...", '
             '"entities": [{"name","description"}]}.\n\nSOURCE:\n' + blob)
         try:
-            d = _llm_obj(prompt, model=model, max_tokens=2048)
-            d["mermaid"] = _clean_mermaid(d.get("mermaid", ""))
-            d.setdefault("entities", [])
-            return d
+            d = _llm_obj(prompt, model=model, max_tokens=4096)
+            mermaid = _clean_mermaid(d.get("mermaid", ""))
+            # If the model returned classes but no edges, fall back to the AST graph
+            # (which now derives real connections) rather than ship standalone boxes.
+            if any(rel in mermaid for rel in ("<|--", "-->", "*--", "..>", "--|>", "o--")):
+                d["mermaid"] = mermaid
+                d.setdefault("entities", [])
+                return d
         except Exception:
             pass
     return _domain_offline(root)
