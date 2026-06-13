@@ -391,6 +391,77 @@ def _verify_axis(root: pathlib.Path, axis_id: str, value: str,
     return follow, decided, counter[:5]
 
 
+_PROPOSE_PROMPT = (
+    "You are mining a codebase's ARCHITECTURE/DESIGN. For each axis below, read "
+    "the source and report the repo's ACTUAL value. Also list `relevant_files` "
+    "(up to 8 repo-relative paths): the files where this axis is DECIDED (include "
+    "both files that follow and any that don't — the population we sample to verify). "
+    "Be honest: set applies=false if the dimension is irrelevant to this repo."
+    "\n\nAXES:\n{axes}"
+    "\n\nReply with a JSON array, one object per axis, in order: "
+    '[{{"axis","applies","value","evidence":["path", ...],'
+    '"relevant_files":["path", ...],'
+    '"consistency":"high|medium|low","tier":"advisory|governed","rationale"}}]'
+    "\n\nSOURCE:\n{blob}"
+)
+
+
+def _semantic_propose(root: pathlib.Path, *, model: str, max_files: int,
+                      per_file: int) -> list[dict]:
+    """PROPOSE pass: one real API call returning each axis's value + population."""
+    import os
+
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        raise RuntimeError("ANTHROPIC_API_KEY not set — the semantic pass needs the real API")
+    blob = _source_blob(root, max_files=max_files, per_file=per_file)
+    axis_lines = "\n".join(f"  {aid}: {q}" for aid, q in DESIGN_AXES)
+    prompt = _PROPOSE_PROMPT.format(axes=axis_lines, blob=blob)
+    return _anthropic_json(prompt, model=model, max_tokens=8192)
+
+
+def _observe_axis(root: pathlib.Path, d: dict, *, model: str, verify: bool,
+                  sample_n: int) -> Observation | None:
+    """Turn one PROPOSE dict into an Observation, VERIFYING-BY-SAMPLING if asked."""
+    if not d.get("applies", True):
+        return None
+    cons = {"high": (10, 10), "medium": (7, 10), "low": (4, 10)}.get(
+        str(d.get("consistency", "medium")).lower(), (7, 10))
+    n_match, n_total = cons
+    method = "llm"
+    counter: list[Site] = []
+    if verify:
+        pop = list(d.get("relevant_files") or []) + list(d.get("evidence") or [])
+        res = _verify_axis(root, d["axis"], d.get("value", ""), pop,
+                           model=model, sample_n=sample_n)
+        if res is not None:
+            n_match, n_total, counter = res
+            method = "llm-verified"
+    return Observation(
+        axis_id=d["axis"],
+        statement=d.get("rationale", d.get("value", "")),
+        value=d.get("value", ""),
+        n_match=n_match, n_total=n_total,
+        sample_sites=[Site(p) for p in (d.get("evidence") or [])[:4]],
+        counterexamples=counter,
+        tier=d.get("tier", "governed"),
+        method=method,
+    )
+
+
+def mine_semantic_iter(root: str | pathlib.Path, *, model: str = "claude-sonnet-4-6",
+                       max_files: int = 40, per_file: int = 4000,
+                       verify: bool = True, sample_n: int = 6):
+    """Generator form of :func:`mine_semantic` — yields each axis's Observation as
+    soon as it is verified, so callers can stream design cards one at a time
+    (the propose call lands first, then one Observation per verify call)."""
+    root = pathlib.Path(root)
+    proposals = _semantic_propose(root, model=model, max_files=max_files, per_file=per_file)
+    for d in proposals:
+        obs = _observe_axis(root, d, model=model, verify=verify, sample_n=sample_n)
+        if obs is not None:
+            yield obs
+
+
 def mine_semantic(root: str | pathlib.Path, *, model: str = "claude-sonnet-4-6",
                   max_files: int = 40, per_file: int = 4000,
                   verify: bool = True, sample_n: int = 6) -> list[Observation]:
@@ -405,54 +476,8 @@ def mine_semantic(root: str | pathlib.Path, *, model: str = "claude-sonnet-4-6",
 
     Raises if the key/SDK is absent — there is no fake fallback for the semantic
     pass (an LLM judge has no deterministic twin)."""
-    import os
-
-    if not os.getenv("ANTHROPIC_API_KEY"):
-        raise RuntimeError("ANTHROPIC_API_KEY not set — the semantic pass needs the real API")
-
-    root = pathlib.Path(root)
-    blob = _source_blob(root, max_files=max_files, per_file=per_file)
-    axis_lines = "\n".join(f"  {aid}: {q}" for aid, q in DESIGN_AXES)
-    prompt = (
-        "You are mining a codebase's ARCHITECTURE/DESIGN. For each axis below, read "
-        "the source and report the repo's ACTUAL value. Also list `relevant_files` "
-        "(up to 8 repo-relative paths): the files where this axis is DECIDED (include "
-        "both files that follow and any that don't — the population we sample to verify). "
-        "Be honest: set applies=false if the dimension is irrelevant to this repo."
-        "\n\nAXES:\n" + axis_lines +
-        "\n\nReply with a JSON array, one object per axis, in order: "
-        '[{"axis","applies","value","evidence":["path", ...],'
-        '"relevant_files":["path", ...],'
-        '"consistency":"high|medium|low","tier":"advisory|governed","rationale"}]'
-        "\n\nSOURCE:\n" + blob
-    )
-    out: list[Observation] = []
-    for d in _anthropic_json(prompt, model=model, max_tokens=8192):
-        if not d.get("applies", True):
-            continue
-        cons = {"high": (10, 10), "medium": (7, 10), "low": (4, 10)}.get(
-            str(d.get("consistency", "medium")).lower(), (7, 10))
-        n_match, n_total = cons
-        method = "llm"
-        counter: list[Site] = []
-        if verify:
-            pop = list(d.get("relevant_files") or []) + list(d.get("evidence") or [])
-            res = _verify_axis(root, d["axis"], d.get("value", ""), pop,
-                               model=model, sample_n=sample_n)
-            if res is not None:
-                n_match, n_total, counter = res
-                method = "llm-verified"
-        out.append(Observation(
-            axis_id=d["axis"],
-            statement=d.get("rationale", d.get("value", "")),
-            value=d.get("value", ""),
-            n_match=n_match, n_total=n_total,
-            sample_sites=[Site(p) for p in (d.get("evidence") or [])[:4]],
-            counterexamples=counter,
-            tier=d.get("tier", "governed"),
-            method=method,
-        ))
-    return out
+    return list(mine_semantic_iter(root, model=model, max_files=max_files,
+                                   per_file=per_file, verify=verify, sample_n=sample_n))
 
 
 def mine_all(root: str | pathlib.Path, *, llm: bool = False,
@@ -471,7 +496,7 @@ def mine_all(root: str | pathlib.Path, *, llm: bool = False,
 
 def render_playbook(root: pathlib.Path, observations: list[Observation],
                     *, threshold: float) -> str:
-    has_llm = any(o.method == "llm" for o in observations)
+    has_llm = any(o.method.startswith("llm") for o in observations)
     note = "exact deterministic support" + (
         " + real-LLM design pass" if has_llm else " · no LLM")
     lines = [f"# Engineering playbook — {root.name or root}", "",

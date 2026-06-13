@@ -15,7 +15,7 @@ import pathlib
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -159,6 +159,31 @@ def playbook_endpoint(body: PlaybookBody) -> dict:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+@app.post("/api/playbook/stream")
+def playbook_stream(body: PlaybookBody) -> StreamingResponse:
+    """Server-Sent Events: stream the playbook section-by-section as it's built,
+    so the UI fills in live instead of blocking on one ~3-min request.
+
+    Each line is `data: {json}\\n\\n`. Errors arrive as an `error` event (we can't
+    set an HTTP status mid-stream once 200 + headers have been sent)."""
+    import json
+
+    def gen():
+        try:
+            for ev in playbook.build_stream_from_url(body.repo_url, llm=body.llm):
+                yield f"data: {json.dumps(ev)}\n\n"
+        except ValueError as e:
+            yield f"data: {json.dumps({'event': 'error', 'status': 400, 'detail': str(e)})}\n\n"
+        except RuntimeError as e:
+            yield f"data: {json.dumps({'event': 'error', 'status': 502, 'detail': str(e)})}\n\n"
+        except Exception as e:  # noqa: BLE001 — surface anything else to the client
+            yield f"data: {json.dumps({'event': 'error', 'status': 500, 'detail': str(e)[:300]})}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no"})
 
 
 # -- waitlist (public marketing site posts here) -----------------------------

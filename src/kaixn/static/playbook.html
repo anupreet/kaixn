@@ -61,6 +61,12 @@
            font-family:ui-monospace,monospace; }
   .plink:hover { background:#0d2440; }
   .empty { color:var(--muted); padding:18px 0; }
+  .prog { display:flex; align-items:center; gap:10px; color:var(--muted); font-size:13px;
+          margin:2px 0 16px; min-height:18px; }
+  .prog.err { color:#f85149; }
+  .prog .dot { width:13px; height:13px; border:2px solid var(--line); border-top-color:var(--accent);
+               border-radius:50%; display:inline-block; animation:spin .8s linear infinite; flex:none; }
+  .prog .tick { color:var(--good); font-weight:700; }
 </style>
 </head>
 <body>
@@ -80,47 +86,87 @@
 const $ = id => document.getElementById(id);
 const esc = s => (s??"").toString().replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 
-const STEPS = ["cloning the repo…", "scanning source (exact support)…",
-               "analyzing architecture & design (LLM)…",
-               "verifying design axes by sampling…", "assembling the playbook…"];
-let stepTimer = null;
+// live state, filled in as the SSE stream arrives
+let S = null;
 
 async function run() {
   const url = $('repo').value.trim();
   if (!url) return;
   const go = $('go'); go.disabled = true;
-  const out = $('out');
-  let i = 0;
-  out.innerHTML = `<div class="spin"><div class="dot"></div><span id="st">${STEPS[0]}</span></div>`;
-  stepTimer = setInterval(() => { i = Math.min(i+1, STEPS.length-1); const s=$('st'); if(s) s.textContent = STEPS[i]; }, 9000);
+  S = { repo: url, llm: null, features: [], tech_specs: [], principles: [], active: 'prin' };
+  renderShell(true);
+  setProg("connecting…", true);
   try {
-    const r = await fetch('/api/playbook', { method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ repo_url: url }) });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.detail || ('HTTP '+r.status));
-    render(data);
+    const r = await fetch('/api/playbook/stream', { method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({ repo_url: url }) });
+    if (!r.ok || !r.body) throw new Error('HTTP '+r.status);
+    const reader = r.body.getReader(), dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) >= 0) {       // one SSE frame
+        const frame = buf.slice(0, idx); buf = buf.slice(idx + 2);
+        const line = frame.split('\n').find(l => l.startsWith('data:'));
+        if (line) onEvent(JSON.parse(line.slice(5).trim()));
+      }
+    }
   } catch (e) {
-    out.innerHTML = `<div class="err">${esc(e.message)}</div>`;
-  } finally { clearInterval(stepTimer); go.disabled = false; }
+    setProg(`error: ${esc(e.message)}`, false, true);
+  } finally { go.disabled = false; }
 }
 
-function render(d) {
-  const f = d.features||[], t = d.tech_specs||[], p = d.principles||[];
-  const llmBadge = d.llm ? `<span class="badge llm">LLM analysis</span>`
-                         : `<span class="badge">offline mode</span>`;
+function onEvent(ev) {
+  switch (ev.event) {
+    case 'meta':        S.llm = ev.llm; S.repo = ev.repo || S.repo; renderShell(true); break;
+    case 'status':      setProg(ev.step, true); break;
+    case 'conventions': S.principles = (ev.items||[]).concat(S.principles); refresh('prin'); break;
+    case 'principle':   S.principles.push(ev.item); refresh('prin');
+                        setProg(`verified design axis: ${ev.item.axis} (${ev.item.support})`, true); break;
+    case 'features':    S.features = ev.items||[]; refresh('feat'); break;
+    case 'tech_specs':  S.tech_specs = ev.items||[]; refresh('tech'); break;
+    case 'done':        setProg('done — playbook complete', false); break;
+    case 'error':       setProg(`error: ${esc(ev.detail||('HTTP '+ev.status))}`, false, true); break;
+  }
+}
+
+function setProg(text, busy, err) {
+  const p = $('prog'); if (!p) return;
+  p.className = err ? 'prog err' : 'prog';
+  p.innerHTML = (busy ? `<span class="dot"></span>` : (err ? '' : `<span class="tick">✓</span>`)) +
+                `<span>${err ? text : esc(text)}</span>`;
+}
+
+function renderShell(reset) {
+  const f = S.features, t = S.tech_specs, p = S.principles;
+  const llmBadge = S.llm == null ? '' : (S.llm ? `<span class="badge llm">LLM analysis</span>`
+                                                : `<span class="badge">offline mode</span>`);
   $('out').innerHTML = `
-    <div class="repohead"><span class="name">${esc(d.repo||'repo')}</span>${llmBadge}</div>
+    <div class="repohead"><span class="name">${esc(S.repo||'repo')}</span>${llmBadge}</div>
+    <div id="prog" class="prog"></div>
     <div class="tabs">
-      <div class="tab active" data-t="feat" onclick="tab('feat')">Features / PRDs<span class="ct">${f.length}</span></div>
-      <div class="tab" data-t="tech" onclick="tab('tech')">Tech Specs<span class="ct">${t.length}</span></div>
-      <div class="tab" data-t="prin" onclick="tab('prin')">Engineering Design Principles<span class="ct">${p.length}</span></div>
+      <div class="tab ${S.active==='feat'?'active':''}" data-t="feat" onclick="tab('feat')">Features / PRDs<span class="ct" id="c-feat">${f.length}</span></div>
+      <div class="tab ${S.active==='tech'?'active':''}" data-t="tech" onclick="tab('tech')">Tech Specs<span class="ct" id="c-tech">${t.length}</span></div>
+      <div class="tab ${S.active==='prin'?'active':''}" data-t="prin" onclick="tab('prin')">Engineering Design Principles<span class="ct" id="c-prin">${p.length}</span></div>
     </div>
-    <div id="feat" class="pane active">${renderFeatures(f)}</div>
-    <div id="tech" class="pane">${renderTech(t)}</div>
-    <div id="prin" class="pane">${renderPrinciples(p)}</div>`;
+    <div id="feat" class="pane ${S.active==='feat'?'active':''}">${renderFeatures(f)}</div>
+    <div id="tech" class="pane ${S.active==='tech'?'active':''}">${renderTech(t)}</div>
+    <div id="prin" class="pane ${S.active==='prin'?'active':''}">${renderPrinciples(p)}</div>`;
+}
+
+function refresh(pane) {
+  const map = { feat: ['feat', renderFeatures, S.features],
+                tech: ['tech', renderTech, S.tech_specs],
+                prin: ['prin', renderPrinciples, S.principles] };
+  const [id, fn, data] = map[pane];
+  const el = $(id); if (el) el.innerHTML = fn(data);
+  const ct = $('c-'+id); if (ct) ct.textContent = data.length;
 }
 
 function tab(name) {
+  if (S) S.active = name;
   document.querySelectorAll('.tab').forEach(e => e.classList.toggle('active', e.dataset.t===name));
   document.querySelectorAll('.pane').forEach(e => e.classList.toggle('active', e.id===name));
 }

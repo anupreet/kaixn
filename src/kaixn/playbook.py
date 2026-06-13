@@ -22,7 +22,13 @@ import subprocess
 import tempfile
 
 from kaixn.app import normalize_repo_url
-from kaixn.miner import Observation, _source_blob, mine_all
+from kaixn.miner import (
+    Observation,
+    _source_blob,
+    mine,
+    mine_all,
+    mine_semantic_iter,
+)
 
 
 def _llm_enabled() -> bool:
@@ -169,16 +175,80 @@ def build_from_url(repo_url: str, *, llm: bool | None = None,
                    model: str = "claude-sonnet-4-6") -> dict:
     """Clone a GitHub repo (shallow) and build its playbook."""
     url = normalize_repo_url(repo_url)
+    tmp = _clone(url)
+    try:
+        out = build(tmp, llm=llm, model=model)
+        out["repo"] = url
+        return out
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# --- streaming (progressive UI) --------------------------------------------
+def _clone(url: str) -> str:
+    """Shallow-clone ``url`` into a temp dir (caller removes it). Raises
+    RuntimeError on clone failure/timeout so the web layer can map it to 502."""
     tmp = tempfile.mkdtemp(prefix="kaixn-playbook-")
     try:
         subprocess.run(["git", "clone", "--depth", "1", url, tmp],
                        check=True, capture_output=True, text=True, timeout=180)
-        out = build(tmp, llm=llm, model=model)
-        out["repo"] = url
-        return out
     except subprocess.CalledProcessError as e:
+        shutil.rmtree(tmp, ignore_errors=True)
         raise RuntimeError(f"git clone failed: {e.stderr.strip()[:300]}") from e
     except subprocess.TimeoutExpired as e:
+        shutil.rmtree(tmp, ignore_errors=True)
         raise RuntimeError("git clone timed out") from e
+    return tmp
+
+
+def build_stream(root: str | pathlib.Path, *, llm: bool | None = None,
+                 model: str = "claude-sonnet-4-6"):
+    """Generator that yields the playbook in pieces, fastest-first, so the UI can
+    render it as it's produced instead of waiting for the whole thing:
+
+      meta → conventions (instant) → status → one `principle` per verified design
+      axis → features → tech_specs → done
+
+    The slow design-axis verify loop streams one card at a time — the wait becomes
+    a live-filling page. Each yielded value is a JSON-serializable event dict."""
+    root = pathlib.Path(root)
+    use_llm = _llm_enabled() if llm is None else llm
+    yield {"event": "meta", "llm": use_llm}
+
+    # 1) deterministic conventions — instant, no API
+    principles: list[dict] = [_obs_dict(o) for o in mine(root)]
+    yield {"event": "conventions", "items": principles}
+
+    # 2) design/architecture axes — propose (one call), then one card per verify
+    if use_llm:
+        yield {"event": "status", "step": "analyzing architecture & design (LLM)…"}
+        try:
+            for o in mine_semantic_iter(root, model=model):
+                d = _obs_dict(o)
+                principles.append(d)
+                yield {"event": "principle", "item": d}
+        except Exception as e:                       # real API down mid-stream
+            yield {"event": "status", "step": f"design pass skipped: {str(e)[:120]}"}
+
+    # 3) features + tech specs — now able to link against every mined principle
+    yield {"event": "status", "step": "extracting features & tech specs…"}
+    yield {"event": "features",
+           "items": build_features(root, llm=use_llm, principles=principles, model=model)}
+    yield {"event": "tech_specs",
+           "items": build_tech_specs(root, llm=use_llm, principles=principles, model=model)}
+    yield {"event": "done"}
+
+
+def build_stream_from_url(repo_url: str, *, llm: bool | None = None,
+                          model: str = "claude-sonnet-4-6"):
+    """Clone a repo and stream its playbook (see :func:`build_stream`)."""
+    url = normalize_repo_url(repo_url)
+    yield {"event": "status", "step": "cloning the repo…"}
+    tmp = _clone(url)
+    try:
+        for ev in build_stream(tmp, llm=llm, model=model):
+            if ev.get("event") == "meta":
+                ev["repo"] = url
+            yield ev
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
