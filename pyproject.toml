@@ -18,13 +18,16 @@ anthropic = ["anthropic>=0.40"]          # atomicity split + adjudication
 openai = ["openai>=1.30"]                # cloud embeddings (1536)
 postgres = ["psycopg[binary]>=3.2", "pgvector>=0.3"]
 server = ["mcp>=1.2"]
+web = ["fastapi>=0.110", "uvicorn[standard]>=0.27", "pydantic>=2"]
 dev = ["pytest>=8", "ruff>=0.4"]
 
 [project.scripts]
 kaixn-server = "kaixn.server:main"
+kaixn-web = "kaixn.web:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/kaixn"]
+artifacts = ["src/kaixn/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

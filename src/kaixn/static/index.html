@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kaixn — review the plan, not the PR</title>
+<style>
+  :root {
+    --bg:#0d1117; --panel:#161b22; --border:#30363d; --fg:#e6edf3;
+    --muted:#8b949e; --accent:#7c9cff; --good:#3fb950; --warn:#d29922;
+    --bad:#f85149; --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+    font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  header { padding:20px 28px; border-bottom:1px solid var(--border);
+    display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; }
+  header h1 { margin:0; font-size:22px; letter-spacing:-.5px; }
+  header .tag { color:var(--muted); font-style:italic; }
+  #status { margin-left:auto; font:12px/1.4 var(--mono); color:var(--muted);
+    text-align:right; }
+  #status .on { color:var(--good); } #status .off { color:var(--warn); }
+  main { max-width:1100px; margin:0 auto; padding:24px 28px 80px; }
+  .step { background:var(--panel); border:1px solid var(--border);
+    border-radius:10px; padding:20px 22px; margin-bottom:20px; }
+  .step h2 { margin:0 0 4px; font-size:16px; display:flex; gap:8px; align-items:center;}
+  .step .n { background:var(--accent); color:#0d1117; width:22px; height:22px;
+    border-radius:50%; display:inline-flex; align-items:center; justify-content:center;
+    font-size:13px; font-weight:700; flex:none; }
+  .step p.hint { margin:2px 0 14px 30px; color:var(--muted); font-size:13px; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  input[type=text], textarea, input:not([type]) {
+    background:#0d1117; border:1px solid var(--border); color:var(--fg);
+    border-radius:7px; padding:10px 12px; font:14px var(--mono); width:100%; }
+  textarea { min-height:70px; resize:vertical; font-family:inherit; }
+  button { background:var(--accent); color:#0d1117; border:0; border-radius:7px;
+    padding:10px 16px; font-weight:600; cursor:pointer; font-size:14px; }
+  button.ghost { background:transparent; color:var(--accent);
+    border:1px solid var(--accent); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .out { margin-top:14px; }
+  .card { border:1px solid var(--border); border-radius:8px; padding:12px 14px;
+    margin:8px 0; background:#0d1117; }
+  .pill { font:11px var(--mono); padding:2px 7px; border-radius:20px;
+    border:1px solid var(--border); color:var(--muted); }
+  .pill.norm { color:var(--accent); border-color:var(--accent); }
+  .pill.code { color:#d2a8ff; border-color:#d2a8ff; }
+  .pill.consistent,.pill.accept { color:var(--good); border-color:var(--good); }
+  .pill.conflict,.pill.blocked { color:var(--bad); border-color:var(--bad); }
+  .pill.tension,.pill.gap { color:var(--warn); border-color:var(--warn); }
+  .muted { color:var(--muted); } .err { color:var(--bad); }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  pre { background:#010409; border:1px solid var(--border); border-radius:8px;
+    padding:14px; overflow:auto; font:12.5px/1.5 var(--mono); white-space:pre-wrap; }
+  .spin::after { content:"…"; animation:dots 1s steps(4) infinite; }
+  @keyframes dots { 0%{content:""} 25%{content:"."} 50%{content:".."} 75%{content:"..."} }
+  label.lbl { font-size:13px; color:var(--muted); display:block; margin:8px 0 4px; }
+  .disabled { opacity:.45; pointer-events:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>kaixn</h1>
+  <span class="tag">review the plan, not the PR</span>
+  <div id="status">loading…</div>
+</header>
+<main>
+
+  <section class="step" id="s1">
+    <h2><span class="n">1</span> Connect a GitHub repo</h2>
+    <p class="hint">We shallow-clone the repo and mine its docs into a draft
+      constitution (proposed norms). Promote the ones that are real.</p>
+    <div class="row">
+      <input type="text" id="repo" placeholder="https://github.com/org/repo"
+             style="flex:1;min-width:280px" value="https://github.com/tiangolo/fastapi">
+      <button id="connectBtn" onclick="connect()">Connect</button>
+    </div>
+    <div class="out" id="connectOut"></div>
+  </section>
+
+  <section class="step disabled" id="s2">
+    <h2><span class="n">2</span> Write an intent → synthesize a Proposal</h2>
+    <p class="hint">A PM writes intent in prose. kaixn decomposes it into typed
+      operations and checks them against the constitution <em>before</em> code.</p>
+    <textarea id="intent" placeholder="e.g. Add rate limiting to the public API and store limits per-tenant in Postgres."></textarea>
+    <div class="row" style="margin-top:10px">
+      <button id="synthBtn" onclick="synthesize()">Synthesize Proposal</button>
+    </div>
+    <div class="out" id="proposalOut"></div>
+  </section>
+
+  <section class="step disabled" id="s3">
+    <h2><span class="n">3</span> Review drift against the plan</h2>
+    <p class="hint">Simulate a PR: list changed files and described changes. kaixn
+      checks coverage (did the PR do the plan?) and violations (vs the constitution).</p>
+    <label class="lbl">Changed files (one per line)</label>
+    <textarea id="prFiles" placeholder="src/api/limits.py&#10;migrations/004_limits.sql"></textarea>
+    <label class="lbl">Described changes (one per line)</label>
+    <textarea id="prChanges" placeholder="Add per-tenant rate limit table&#10;Enforce limit in middleware"></textarea>
+    <div class="row" style="margin-top:10px">
+      <button id="reviewBtn" onclick="review()">Run Drift Review</button>
+    </div>
+    <div class="out" id="reviewOut"></div>
+  </section>
+
+</main>
+
+<script>
+let PROPOSAL_ID = null;
+
+const $ = id => document.getElementById(id);
+const esc = s => (s==null?"":String(s)).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+async function api(method, path, body) {
+  const r = await fetch(path, {
+    method, headers: body ? {'Content-Type':'application/json'} : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.detail || ('HTTP ' + r.status));
+  return data;
+}
+
+async function loadStatus() {
+  try {
+    const s = await api('GET', '/api/status');
+    const llm = s.llm_enabled
+      ? '<span class="on">LLM on</span>' : '<span class="off">LLM off (offline mode)</span>';
+    $('status').innerHTML =
+      `backend: <b>${s.backend}</b> · embedder: ${s.embedder} (dim ${s.embed_dim})<br>`
+      + `${llm} · active norms: ${s.active_norms} · proposed: ${s.proposed_norms}`;
+  } catch (e) { $('status').innerHTML = '<span class="off">status unavailable</span>'; }
+}
+
+function setBusy(btn, busy, label) {
+  btn.disabled = busy;
+  btn.textContent = busy ? label : btn.dataset.label || label;
+  if (!btn.dataset.label) btn.dataset.label = label;
+}
+
+async function connect() {
+  const url = $('repo').value.trim();
+  const out = $('connectOut');
+  const btn = $('connectBtn');
+  out.innerHTML = '<span class="muted spin">cloning & mining docs</span>';
+  setBusy(btn, true, 'Connecting…');
+  try {
+    const r = await api('POST', '/api/connect', { repo_url: url });
+    let html = `<div class="muted">${r.documents} docs scanned · `
+      + `${r.extracted} candidates · <b>${r.proposed}</b> proposed norms</div>`;
+    if (!r.proposed_norms.length) html += '<div class="muted">No norms mined — try a repo with richer docs.</div>';
+    r.proposed_norms.forEach(n => {
+      html += `<div class="card"><div class="row" style="justify-content:space-between">
+        <div><span class="pill norm">${esc(n.domain)}</span>
+        <span class="pill">${esc(n.kind)}</span> ${esc(n.statement)}</div>
+        <button class="ghost" onclick="promote('${n.id}', this)">Promote</button></div></div>`;
+    });
+    out.innerHTML = html;
+    $('s2').classList.remove('disabled');
+    loadStatus();
+  } catch (e) { out.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+  finally { setBusy(btn, false, 'Connect'); }
+}
+
+async function promote(id, btn) {
+  btn.disabled = true; btn.textContent = 'Promoting…';
+  try {
+    await api('POST', `/api/norms/${id}/promote`);
+    btn.textContent = '✓ active'; btn.classList.remove('ghost');
+    loadStatus();
+  } catch (e) { btn.disabled = false; btn.textContent = 'Promote'; alert(e.message); }
+}
+
+async function synthesize() {
+  const intent = $('intent').value.trim();
+  const out = $('proposalOut');
+  const btn = $('synthBtn');
+  if (!intent) { out.innerHTML = '<div class="err">Write an intent first.</div>'; return; }
+  out.innerHTML = '<span class="muted spin">synthesizing operations</span>';
+  setBusy(btn, true, 'Synthesizing…');
+  try {
+    const p = await api('POST', '/api/proposals', { intent });
+    PROPOSAL_ID = p.proposal_id;
+    out.innerHTML = renderProposal(p);
+    $('s3').classList.remove('disabled');
+  } catch (e) { out.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+  finally { setBusy(btn, false, 'Synthesize Proposal'); }
+}
+
+function renderProposal(p) {
+  let html = `<div class="muted">proposal <code>${esc(p.proposal_id)}</code></div>`;
+  html += '<div class="out">';
+  p.operations.forEach(o => {
+    html += `<div class="card"><span class="pill ${o.kind}">${esc(o.kind)}</span>
+      <span class="pill">${esc(o.op_type)}</span>
+      <span class="pill ${o.status}">${esc(o.status)}</span> ${esc(o.statement)}`;
+    if (o.target_location) html += `<div class="muted">→ ${esc(o.target_location)}</div>`;
+    if (o.notes) html += `<div class="muted">${esc(o.notes)}</div>`;
+    html += '</div>';
+  });
+  html += '</div>';
+
+  const cr = p.conflict_report;
+  if (cr) {
+    const blk = cr.blocked ? '<span class="pill blocked">BLOCKED</span>' : '';
+    html += `<h3 style="margin:14px 0 6px">Conflict report ${blk}</h3>`;
+    if (!cr.findings.length) html += '<div class="muted">No conflicts found.</div>';
+    cr.findings.forEach((f, i) => {
+      html += `<div class="card"><span class="pill ${f.verdict}">${esc(f.verdict)}</span>
+        vs ${esc(f.norm_kind)}: <em>${esc(f.norm)}</em>`;
+      if (f.on) html += `<div class="muted">on op: ${esc(f.on)}</div>`;
+      if (f.resolution) html += `<div class="muted">resolution: ${esc(f.resolution)}</div>`;
+      if (f.verdict === 'conflict' && f.norm_kind === 'decision') {
+        html += `<div class="row" style="margin-top:8px">
+          <input type="text" id="ov${i}" placeholder="new decision to supersede with"
+                 style="flex:1">
+          <button class="ghost" onclick="resolve(${i})">Override</button></div>`;
+      }
+      html += '</div>';
+    });
+  } else {
+    html += '<div class="muted" style="margin-top:10px">Offline mode: structural checks only (no semantic conflict report). Set ANTHROPIC_API_KEY for full adjudication.</div>';
+  }
+
+  html += `<details style="margin-top:14px"><summary class="muted">agent contract (markdown)</summary>
+    <pre>${esc(p.agent_contract)}</pre></details>`;
+  html += `<div class="row" style="margin-top:12px">
+    <button onclick="commit()">Commit Proposal to constitution</button></div>
+    <div class="out" id="commitOut"></div>`;
+  return html;
+}
+
+async function resolve(i) {
+  const val = $('ov'+i).value.trim();
+  if (!val) { alert('enter a replacement decision'); return; }
+  try {
+    const p = await api('POST', `/api/proposals/${PROPOSAL_ID}/resolve`,
+      { finding_index: i, new_decision: val });
+    $('proposalOut').innerHTML = renderProposal(p);
+  } catch (e) { alert(e.message); }
+}
+
+async function commit() {
+  const out = $('commitOut');
+  out.innerHTML = '<span class="muted spin">committing</span>';
+  try {
+    const r = await api('POST', `/api/proposals/${PROPOSAL_ID}/commit`);
+    let html = `<div class="card"><b class="${r.committed.length?'':'muted'}">
+      ${r.committed.length} committed</b> · ${r.superseded.length} superseded ·
+      ${r.deprecated.length} deprecated · ${r.edges} edges`;
+    if (r.deferred.length) {
+      html += '<div style="margin-top:8px">deferred:</div>';
+      r.deferred.forEach(d => html += `<div class="muted">• ${esc(d.statement)} — ${esc(d.reason)}</div>`);
+    }
+    html += '</div>';
+    out.innerHTML = html;
+    loadStatus();
+  } catch (e) { out.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+}
+
+async function review() {
+  if (!PROPOSAL_ID) { alert('synthesize a proposal first'); return; }
+  const out = $('reviewOut');
+  const btn = $('reviewBtn');
+  const files = $('prFiles').value.split('\n').map(s=>s.trim()).filter(Boolean);
+  const changes = $('prChanges').value.split('\n').map(s=>s.trim()).filter(Boolean);
+  out.innerHTML = '<span class="muted spin">reviewing</span>';
+  setBusy(btn, true, 'Reviewing…');
+  try {
+    const r = await api('POST', `/api/proposals/${PROPOSAL_ID}/review`,
+      { files, changes });
+    const verdict = r.approve
+      ? '<span class="pill consistent">APPROVE</span>'
+      : '<span class="pill conflict">CHANGES REQUESTED</span>';
+    let html = `<div class="card">${verdict}`;
+    r.comments.forEach(c => html += `<div style="margin-top:6px">
+      <span class="pill">${esc(c.kind)}</span> ${esc(c.body)}</div>`);
+    if (!r.comments.length) html += '<div class="muted" style="margin-top:6px">No comments.</div>';
+    html += '</div>';
+    out.innerHTML = html;
+  } catch (e) { out.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+  finally { setBusy(btn, false, 'Run Drift Review'); }
+}
+
+loadStatus();
+</script>
+</body>
+</html>

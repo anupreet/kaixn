@@ -6,8 +6,35 @@ dataclasses so the gate/engine logic has no DB or LLM dependency.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
+
+# ltree labels accept letters, digits, underscores and hyphens; anything else
+# (spaces, slashes, punctuation) is a syntax error when cast to ltree. LLM
+# extractors and synthesizers emit free-form scopes like "all.product design"
+# or "all.user/auth", so every scope is normalized at construction.
+_LTREE_BAD = re.compile(r"[^A-Za-z0-9_-]+")
+
+
+def normalize_scope(scope: str | None) -> str:
+    """Coerce any string into a valid ltree path rooted at `all`.
+
+    Each dot-separated label has illegal characters folded to `_`; empty labels
+    are dropped; the path is rooted at `all` so scope_governs/`@>` behave. Valid
+    inputs (e.g. "all.product.billing") are returned unchanged."""
+    if not scope:
+        return "all"
+    labels = []
+    for raw in str(scope).split("."):
+        label = _LTREE_BAD.sub("_", raw).strip("_-")
+        if label:
+            labels.append(label)
+    if not labels:
+        return "all"
+    if labels[0] != "all":
+        labels.insert(0, "all")
+    return ".".join(labels)
 
 
 # --- norms -----------------------------------------------------------------
@@ -24,6 +51,9 @@ class NormCandidate:
     kind: str = "decision"    # principle | decision
     rationale: str = ""
     embedding: list[float] | None = None
+
+    def __post_init__(self) -> None:
+        self.scope = normalize_scope(self.scope)
 
 
 @dataclass(slots=True)
@@ -133,6 +163,9 @@ class Operation:
     # code-op fields
     target_location: str = ""
     acceptance_criteria: str = ""
+
+    def __post_init__(self) -> None:
+        self.scope = normalize_scope(self.scope)
 
     def kind_type_coherent(self) -> bool:
         if self.kind is OpKind.NORM:

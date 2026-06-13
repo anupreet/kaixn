@@ -16,6 +16,19 @@ DSN = os.getenv("KAIXN_TEST_DSN")
 pytestmark = pytest.mark.skipif(not DSN, reason="KAIXN_TEST_DSN not set")
 
 
+def _schema_vector_dim(conn) -> int:
+    """The width the `norm.embedding` column was migrated to (64/768/1536).
+
+    apply_migrations.py rewrites the vector width to match the active embedder,
+    so the test must use a matching dim or every insert fails. Read it from the
+    DB instead of hardcoding."""
+    fmt = conn.execute(
+        "SELECT format_type(atttypid, atttypmod) FROM pg_attribute "
+        "WHERE attrelid = 'norm'::regclass AND attname = 'embedding'"
+    ).fetchone()[0]
+    return int(fmt[fmt.index("(") + 1 : fmt.index(")")])
+
+
 @pytest.fixture
 def store():
     pytest.importorskip("psycopg")
@@ -25,7 +38,9 @@ def store():
 
     conn = pg_connect(DSN)
     conn.execute("TRUNCATE norm, edge CASCADE")
-    return PgStore(conn, FakeEmbedder())
+    # Match the migrated column width so this test runs against a production-dim
+    # (1536) DB as well as a fake-dim (64) one.
+    return PgStore(conn, FakeEmbedder(dim=_schema_vector_dim(conn)))
 
 
 def test_add_get_and_supersede(store):

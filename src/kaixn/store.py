@@ -81,6 +81,10 @@ class InMemoryNormReader:
     def get(self, norm_id: str) -> NormRecord | None:
         return next((n for n in self._norms if n.id == norm_id), None)
 
+    def all_norms(self, status: str | None = None) -> list[NormRecord]:
+        """Every norm (optionally filtered by status) — for listing in the UI."""
+        return [n for n in self._norms if status is None or n.status == status]
+
 
 class InMemoryStore(InMemoryNormReader):
     """Read + write + edges, for the POC. Mirrors what PgStore will do over the
@@ -157,7 +161,7 @@ class PgNormReader:
             ORDER  BY embedding <=> %s        -- cosine distance (pgvector)
             LIMIT  %s
             """,
-            (candidate.domain, candidate.embedding, top_k),
+            (candidate.domain, _vec(candidate.embedding), top_k),
         ).fetchall()
         return [NormRecord(*r) for r in rows]
 
@@ -184,6 +188,41 @@ class PgNormReader:
             (norm_id,),
         ).fetchone()
         return NormRecord(*row) if row else None
+
+    def all_norms(self, status: str | None = None) -> list[NormRecord]:
+        """Every norm (optionally filtered by status) — for listing in the UI."""
+        if status is None:
+            rows = self._conn.execute(
+                """
+                SELECT id::text, statement, domain::text, scope::text,
+                       kind::text, rationale, status::text
+                FROM   norm ORDER BY created_at
+                """
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                """
+                SELECT id::text, statement, domain::text, scope::text,
+                       kind::text, rationale, status::text
+                FROM   norm WHERE status = %s ORDER BY created_at
+                """,
+                (status,),
+            ).fetchall()
+        return [NormRecord(*r) for r in rows]
+
+
+def _vec(values: list[float] | None):
+    """Adapt a Python float list to a pgvector parameter.
+
+    psycopg's default list dumper sends `double precision[]`, which has no
+    `<=>` operator against `vector`; wrapping in pgvector's `Vector` selects the
+    vector dumper so the param binds as `vector`.
+    """
+    if values is None:
+        return None
+    from pgvector.psycopg import Vector
+
+    return Vector(values)
 
 
 def pg_connect(dsn: str):
@@ -217,7 +256,8 @@ class PgStore(PgNormReader):
                       kind::text, rationale, status::text
             """,
             (candidate.kind, candidate.domain, candidate.statement,
-             candidate.rationale, candidate.scope, status, candidate.embedding),
+             candidate.rationale, candidate.scope, status,
+             _vec(candidate.embedding)),
         ).fetchone()
         rec = NormRecord(*row)
         rec.embedding = candidate.embedding
@@ -230,6 +270,22 @@ class PgStore(PgNormReader):
     def add_edge(self, src_id: str, src_type: str, dst_id: str, dst_type: str,
                  rel_type: str, metadata: dict | None = None) -> None:
         import json
+        import uuid as _uuid
+
+        # The edge table is a graph among first-class nodes (uuid endpoints).
+        # Bootstrap also records doc-source provenance whose "src" is a file path,
+        # not a node — that can't live here, so skip it (the norm is still
+        # created). All graph edges (supersedes/creates from operations) have
+        # uuid endpoints and persist normally.
+        def _is_uuid(v: str) -> bool:
+            try:
+                _uuid.UUID(str(v))
+                return True
+            except (ValueError, AttributeError, TypeError):
+                return False
+
+        if not (_is_uuid(src_id) and _is_uuid(dst_id)):
+            return
 
         self._conn.execute(
             """

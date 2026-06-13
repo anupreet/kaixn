@@ -1,0 +1,46 @@
+# Local end-to-end stack: kaixn web app + Postgres (pgvector + ltree).
+#
+#   cp .env.example .env      # add ANTHROPIC_API_KEY / OPENAI_API_KEY (optional)
+#   docker compose up --build
+#   open http://localhost:8000
+#
+# With no API keys it runs in offline mode (deterministic embedder + structural
+# checks only) — still fully end-to-end. Add keys for LLM synthesis/adjudication.
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: kaixn
+      POSTGRES_PASSWORD: kaixn
+      POSTGRES_DB: kaixn
+    ports:
+      # host:container — 5433 on the host avoids clashing with a local Postgres.
+      # The web service reaches the DB over the internal network at db:5432.
+      - "5433:5432"
+    volumes:
+      - kaixn_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kaixn"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  web:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      KAIXN_DSN: postgresql://kaixn:kaixn@db:5432/kaixn
+      # 'openai' (default) = real semantic retrieval at vector(1536), needs
+      # OPENAI_API_KEY. Set KAIXN_EMBEDDER=fake for a zero-dependency offline run.
+      KAIXN_EMBEDDER: ${KAIXN_EMBEDDER:-openai}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      PORT: "8000"
+    ports:
+      - "8000:8000"
+
+volumes:
+  kaixn_pg:

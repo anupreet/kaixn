@@ -11,6 +11,44 @@ against everything already decided *before* a coding agent writes a line, and
 emits a grounded contract the agent implements. **PR review becomes Proposal
 review.**
 
+## Run it (web UI, end to end)
+
+A FastAPI app serves a UI where you paste a **GitHub URL**, mine its docs into a
+draft constitution, write an intent, review the synthesized **Proposal** +
+conflict report, commit it, and run a drift review — the whole loop in the browser.
+
+**Local, with Postgres, in one command:**
+
+```bash
+cp .env.example .env          # optionally add ANTHROPIC_API_KEY / OPENAI_API_KEY
+docker compose up --build     # web + pgvector Postgres
+open http://localhost:8000
+```
+
+With no API keys it runs in deterministic **offline mode** (fake embedder +
+structural checks). Add `ANTHROPIC_API_KEY` for LLM synthesis/adjudication, and
+set `KAIXN_EMBEDDER=openai` (+ `OPENAI_API_KEY`) for real semantic retrieval.
+
+**Without Docker** (in-memory store, no DB):
+
+```bash
+pip install -e '.[web]'
+kaixn-web                     # http://localhost:8000
+```
+
+Point it at your own Postgres by setting `KAIXN_DSN` and applying the schema:
+`python scripts/apply_migrations.py "$KAIXN_DSN"`.
+
+**Deploy to AWS:** ECS Fargate + ALB + RDS Postgres in one stack — see
+[`deploy/README.md`](deploy/README.md).
+
+### HTTP API
+
+`GET /api/status` · `POST /api/connect {repo_url}` · `GET /api/norms` ·
+`POST /api/norms/{id}/promote` · `POST /api/proposals {intent}` ·
+`POST /api/proposals/{id}/resolve` · `POST /api/proposals/{id}/commit` ·
+`POST /api/proposals/{id}/review`. Interactive docs at `/docs`.
+
 ## The three layers
 
 1. **Code** — lives in GitHub (the implementation; kaixn only points at it).
