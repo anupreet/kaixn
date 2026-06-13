@@ -184,6 +184,50 @@ def build_tech_specs(root: pathlib.Path, *, llm: bool, principles: list[dict],
     return specs[:30]
 
 
+# --- combined index (balanced features + tech specs) -----------------------
+def build_index(root: pathlib.Path, *, llm: bool, principles: list[dict],
+                model: str = "claude-sonnet-4-6") -> tuple[list[dict], list[dict]]:
+    """Partition the repo into PRODUCT FEATURES and TECHNICAL AREAS in ONE call,
+    so the two stay balanced and distinct (separate calls let the model dump
+    everything into 'features'). Returns (features, tech_specs).
+
+    Offline → README headings (features) + module docstrings (specs)."""
+    known = {p["axis"] for p in principles}
+    if llm:
+        ctx = _read_docs(root, limit=6) + "\n\n" + _source_blob(root, max_files=20, per_file=2000)
+        prompt = (
+            "Analyze THIS repository and split what it provides into two lists, "
+            "at a senior PM/tech-lead altitude (group related capabilities — do NOT "
+            "list every helper as its own item; aim for the ~8-14 most significant "
+            "of each):\n"
+            "  • features  — user-facing PRODUCT capabilities (what a PM writes a PRD "
+            "for: what users/developers can DO with it).\n"
+            "  • tech_specs — TECHNICAL areas a tech-lead specs (HOW it's built: "
+            "architecture, stack/storage, core engine/algorithms, interfaces/seams, "
+            "data flow, concurrency, extension points, integration).\n"
+            "Every item must be grounded in the code/docs below. Tag each with "
+            "`principles`: axis ids from the menu it relies on (0-3, only from the menu).\n\n"
+            "PRINCIPLE MENU (axis: value):\n" + _axis_menu(principles) +
+            '\n\nReply JSON object: {"features":[{"name","summary","evidence",'
+            '"principles":[]}], "tech_specs":[{"area","decision","rationale",'
+            '"evidence","principles":[]}]}.\n\nREPO:\n' + ctx)
+        try:
+            d = _llm_obj(prompt, model=model, max_tokens=4096)
+            feats = d.get("features") or []
+            specs = d.get("tech_specs") or []
+            for f in feats:
+                f["principles"] = _valid_links(f, known)
+            for s in specs:
+                s["principles"] = _valid_links(s, known)
+            if feats or specs:
+                return feats, specs
+        except Exception:
+            pass
+    # offline fallback: reuse the single-list builders (no LLM inside)
+    return (build_features(root, llm=False, principles=principles, model=model),
+            build_tech_specs(root, llm=False, principles=principles, model=model))
+
+
 # --- full templated documents (PRD / Tech Spec) ----------------------------
 # Classic templates — the human-facing structure each generated doc follows, and
 # the structure an agent can rely on when reading the knowledge back.
@@ -313,9 +357,10 @@ def build(root: str | pathlib.Path, *, llm: bool | None = None,
     root = pathlib.Path(root)
     use_llm = _llm_enabled() if llm is None else llm
     principles = [_obs_dict(o) for o in mine_all(root, llm=use_llm, model=model)]
+    features, specs = build_index(root, llm=use_llm, principles=principles, model=model)
     return {
-        "features": build_features(root, llm=use_llm, principles=principles, model=model),
-        "tech_specs": build_tech_specs(root, llm=use_llm, principles=principles, model=model),
+        "features": features,
+        "tech_specs": specs,
         "principles": principles,
         "llm": use_llm,
     }
@@ -376,8 +421,7 @@ def build_stream(root: str | pathlib.Path, *, llm: bool | None = None,
     # 2) feature + tech-spec LISTS — emit immediately (stable slugs) so the
     #    default PRDs/Tech-Specs tabs populate within seconds.
     yield {"event": "status", "step": "extracting features & tech specs…"}
-    features = build_features(root, llm=use_llm, principles=principles, model=model)
-    specs = build_tech_specs(root, llm=use_llm, principles=principles, model=model)
+    features, specs = build_index(root, llm=use_llm, principles=principles, model=model)
     items = _with_slugs("prd", [{"title": f.get("name", ""), **f} for f in features]) \
         + _with_slugs("spec", [{"title": s.get("area", ""), **s} for s in specs])
     yield {"event": "features", "items": [i for i in items if i["kind"] == "prd"]}
