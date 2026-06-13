@@ -49,6 +49,11 @@ four big phases:
 
 ## Phase 0 — housekeeping (~13:12, `f5a48f5`)
 
+> **Goal:** resume the handbook work cleanly and remove a committed secret without
+> leaving it in history.
+> **Driving prompt:** *"…session-2026-06-13-handbook.md ← continue work"* → on
+> finding the live key, user chose **"Full scrub + history rewrite."**
+
 - **Committed secret remediation.** `.env.save` held a live `ANTHROPIC_API_KEY`.
   Scrubbed from *all* git history via `git filter-repo`, hardened `.gitignore`
   (`.env.*` except `.env.example`), force-pushed the rewritten history. Verified
@@ -59,6 +64,11 @@ four big phases:
   + check `git log`/`git diff HEAD` before assuming the tree is mine.
 
 ## Phase 1 — miner: verify-by-sampling + the hang fix (12:38–14:02)
+
+> **Goal:** make the design-tier support *trustworthy* (real ratios, not the
+> model's self-reported consistency), and make the real-API miner reliable.
+> **Driving prompt:** user chose to build **"1 and 2"** (deepen tabs 1–2 +
+> verify-by-sampling); the hang fix came from *"still running?"* → diagnosis.
 
 - **verify-by-sampling** (`miner.mine_semantic`): PROPOSE (value + a `relevant_files`
   population) → VERIFY (independently classify a sample of those files
@@ -75,12 +85,28 @@ four big phases:
 
 ## Phase 2 — stream the playbook as it's generated (14:32, `9a7ca82`)
 
+> **Goal:** kill the dead ~3-min spinner — show progress as the playbook is built.
+> **Driving prompt:** *"can we show the playbook as it is generated — the UX is
+> terrible as we wait"* (then tested with *"running with …/encode/starlette"*).
+
 Turned the one ~3-min spinner into a live-filling page over **SSE**. Refactored
 `mine_semantic` into `_semantic_propose` + `_observe_axis` + a `mine_semantic_iter`
 generator so design cards stream one at a time. `POST /api/playbook/stream`
 (StreamingResponse); client consumes via fetch+ReadableStream.
 
 ## Phase 3 — the knowledge layer (15:05, `5c92b78` — the big pivot)
+
+> **Goal:** turn the technical inspector into the **human interface** + the durable
+> knowledge agents read back to evaluate a proposed PRD / posted PR.
+> **Driving prompts (three, in sequence):**
+> 1. *"The UX looks very technical — the goal is that this is the human interface,
+>    so each PRD/Tech Spec should follow the classic template… generate and render
+>    them when clicked. We want a domain-driven-design graph… extract the key
+>    objects and how they interact."*
+> 2. *"We also don't want lazy — since this is the knowledge tools/agents use —
+>    like when a new PRD is proposed or a PR is posted we want to evaluate it."*
+> 3. *"We also want to query repos we've already indexed… the root page should be
+>    add or explore."*
 
 User reframed the goal: **this is the human interface, and the knowledge agents
 read to evaluate a new PRD or PR.** That drove three decisions (asked + locked):
@@ -105,6 +131,14 @@ Built:
   `doc.html` (marked + mermaid, polls while generating).
 
 ## Phase 4 — the fixes that came from real runs (15:11–16:12)
+
+> **Goal:** make the knowledge layer actually usable on real repos — content shows
+> where expected, survives interruption, and regenerates on demand.
+> **Driving prompts:** *"I am seeing empty for all"* (ordering) · *"why is the
+> domain model for kaixn still empty?"* (robust persistence) · *"could we also add
+> the ability to rerun/refresh on a URL from the repos page?"* · *"yes lets run
+> these as jobs"* (after I flagged the browser-disconnect fragility). The balance
+> fix (23/1 → 13/13) and the `build_index` truncation fix came from my own test runs.
 
 - **DevOps (user, in parallel):** raised ALB idle timeout to 600s for SSE
   (`79a6d12`); rewrote deploy guide.
@@ -174,3 +208,62 @@ Key modules: `src/kaixn/{miner,playbook,playbook_store,playbook_jobs,web}.py`,
 - Jobs survive a fully-disconnected client (DB filled to 36 docs with no subscriber).
 - Concurrency dedup: a duplicate `/generate` reused the in-flight job (no FK race).
 - Robust domain persistence: interrupting right after the domain step still saved it.
+
+---
+
+## Appendix — the LLM prompts in the pipeline
+
+The actual prompts driving each generation step (in `src/kaixn/{miner,playbook}.py`),
+all run against `claude-sonnet-4-6` via a bounded streaming client.
+
+**1. Design-axis PROPOSE** (`miner._semantic_propose`, max_tokens 8192):
+> "You are mining a codebase's ARCHITECTURE/DESIGN. For each axis below, read the
+> source and report the repo's ACTUAL value. Also list `relevant_files` (up to 8
+> repo-relative paths): the files where this axis is DECIDED (include both files
+> that follow and any that don't — the population we sample to verify). Be honest:
+> set applies=false if the dimension is irrelevant to this repo. … Reply JSON array
+> `[{axis,applies,value,evidence,relevant_files,consistency,tier,rationale}]`."
+> (Axes: layering-direction, seam-pattern, dependency-injection, offline-fallback,
+> error-signaling, input-validation, state-mutation, data-access, concurrency-model,
+> trust-boundary.)
+
+**2. VERIFY-by-sampling** (`miner._verify_axis`, per axis, max_tokens 1536):
+> "Convention under test — axis '{axis}': the repo's stated value is \"{value}\".
+> For EACH file below, decide INDEPENDENTLY whether it FOLLOWS the convention,
+> VIOLATES it, or the convention is NOT_APPLICABLE to that file. Judge only what the
+> file shows. Reply JSON `[{path,verdict:follows|violates|n_a,note}]`." → ratio =
+> follows / (follows+violates).
+
+**3. Combined index — features vs tech-specs** (`playbook.build_index`, max_tokens 8192):
+> "Analyze THIS repository and split what it provides into two lists, at a senior
+> PM/tech-lead altitude (group related capabilities — do NOT list every helper as
+> its own item; aim for the ~8-14 most significant of each): • features — user-facing
+> PRODUCT capabilities (what a PM writes a PRD for). • tech_specs — TECHNICAL areas a
+> tech-lead specs (HOW it's built: architecture, stack/storage, core engine, seams,
+> data flow, concurrency, extension points). Tag each with `principles` from the menu.
+> Reply JSON object `{features:[{name,summary,evidence,principles}], tech_specs:[{area,
+> decision,rationale,evidence,principles}]}`."
+
+**4. Full document** (`playbook.build_doc`, per item, max_tokens 4096):
+> "Write a {Product Requirements Document (PRD) | Technical Specification} for
+> \"{title}\" of THIS repository. Ground every statement in the actual code/docs
+> below; do not invent capabilities the repo doesn't have. Be concrete and specific
+> (name real modules, types, endpoints). Start with a single H1 title, then EXACTLY
+> these H2 sections, in order: {template}."
+> PRD template: Overview · Problem & Context · Goals · Non-Goals · User Stories ·
+> Functional Requirements · UX & Key Flows · Success Metrics · Dependencies & Risks.
+> Spec template: Context & Background · Goals · Non-Goals · Proposed Design ·
+> Data Model · APIs & Interfaces · Key Decisions & Trade-offs · Sequencing & Rollout ·
+> Risks & Open Questions.
+
+**5. Domain model** (`playbook.build_domain`, max_tokens 2048):
+> "Extract the DOMAIN MODEL of this codebase: the key domain objects (entities,
+> aggregates, value objects, services) and how they interact. Output a Mermaid
+> `classDiagram`: declare each key class with its 2-5 most important fields, and the
+> relationships between them — association (-->), inheritance (<|--), composition
+> (*--), dependency (..>) — each with a short label. Keep to the ~15 most important
+> objects. Reply JSON `{mermaid, entities:[{name,description}]}`."
+
+Deterministic floor (no LLM): `miner.mine()` AST detectors compute exact support
+for naming-case, future-annotations, module-docstrings, type-annotations,
+dataclass-slots, test-mirroring, public-surface.
