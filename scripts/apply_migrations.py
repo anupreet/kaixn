@@ -47,8 +47,36 @@ def main(argv: list[str]) -> int:
             "SELECT to_regclass('public.norm') IS NOT NULL"
         ).fetchone()[0]
         if exists:
-            print("• schema already present (norm table exists) — skipping")
-            return 0
+            # The embedding column carries its dimension in atttypmod. If it
+            # already matches the active embedder, we're done. If it differs
+            # (someone swapped embedders) we can only recreate when the schema
+            # holds no data — never silently drop real rows.
+            cur_dim = conn.execute(
+                "SELECT a.atttypmod FROM pg_attribute a "
+                "JOIN pg_class c ON a.attrelid = c.oid "
+                "JOIN pg_namespace n ON c.relnamespace = n.oid "
+                "WHERE n.nspname = 'public' AND c.relname = 'norm' "
+                "AND a.attname = 'embedding'"
+            ).fetchone()[0]
+            if cur_dim == dim:
+                print("• schema already present (norm table exists) — skipping")
+                return 0
+            rows = conn.execute(
+                "SELECT (SELECT count(*) FROM norm) + (SELECT count(*) FROM operation)"
+            ).fetchone()[0]
+            if rows:
+                print(
+                    f"error: embedding dim mismatch (db={cur_dim}, embedder={dim}) "
+                    f"but {rows} row(s) present — refusing to drop data. Migrate the "
+                    f"rows or drop the database manually.",
+                    file=sys.stderr,
+                )
+                return 1
+            print(
+                f"• embedding dim mismatch (db={cur_dim} -> {dim}) and schema is "
+                f"empty — recreating public schema"
+            )
+            conn.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
         conn.execute(sql)
         print("• migration 001 applied")
     return 0

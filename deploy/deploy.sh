@@ -51,6 +51,8 @@ aws cloudformation deploy \
       OpenAiApiKey="${OPENAI_API_KEY:-}" \
       DBPassword="$DB_PASSWORD" \
       DomainName="${DOMAIN_NAME:-}" \
+      WwwDomain="${WWW_DOMAIN:-}" \
+      ApexDomain="${APEX_DOMAIN:-}" \
       HostedZoneId="${HOSTED_ZONE_ID:-}"
 
 URL="$(aws cloudformation describe-stacks --region "$REGION" --stack-name "$STACK" \

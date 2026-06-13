@@ -16,3 +16,4 @@ venv/
 
 # Local deploy secret
 deploy/.db_password.local
+deploy/.secrets.local

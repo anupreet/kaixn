@@ -39,14 +39,24 @@ Parameters:
   DomainName:
     Type: String
     Default: ""
-    Description: Custom domain to serve (e.g. app.kaixn.com). Blank = ALB DNS only, HTTP.
+    Description: Primary custom domain (e.g. app.kaixn.com). Blank = ALB DNS only, HTTP.
+  WwwDomain:
+    Type: String
+    Default: ""
+    Description: Optional www alias (e.g. www.kaixn.com).
+  ApexDomain:
+    Type: String
+    Default: ""
+    Description: Optional apex alias (e.g. kaixn.com).
   HostedZoneId:
     Type: String
     Default: ""
-    Description: Route53 hosted zone ID for DomainName (required when DomainName is set).
+    Description: Route53 hosted zone ID for the domains (required when DomainName is set).
 
 Conditions:
   HasDomain: !Not [!Equals [!Ref DomainName, ""]]
+  HasWww: !Not [!Equals [!Ref WwwDomain, ""]]
+  HasApex: !Not [!Equals [!Ref ApexDomain, ""]]
 
 Resources:
   # --- Network ---------------------------------------------------------------
@@ -148,11 +158,31 @@ Resources:
       StorageType: gp3
       BackupRetentionPeriod: 1
 
-  # --- Secrets ---------------------------------------------------------------
+  # --- Secrets (customer-managed KMS) ----------------------------------------
+  SecretsKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub "${AWS::StackName} app secrets (CMK)"
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnableIAMUserPermissions
+            Effect: Allow
+            Principal: { AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root" }
+            Action: "kms:*"
+            Resource: "*"
+  SecretsKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub "alias/${AWS::StackName}-secrets"
+      TargetKeyId: !Ref SecretsKey
+
   AppSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
       Name: !Sub "${AWS::StackName}-secrets"
+      KmsKeyId: !Ref SecretsKey
       SecretString: !Sub |
         {"ANTHROPIC_API_KEY":"${AnthropicApiKey}","OPENAI_API_KEY":"${OpenAiApiKey}","DB_PASSWORD":"${DBPassword}"}
 
@@ -183,6 +213,9 @@ Resources:
               - Effect: Allow
                 Action: secretsmanager:GetSecretValue
                 Resource: !Ref AppSecret
+              - Effect: Allow
+                Action: kms:Decrypt
+                Resource: !GetAtt SecretsKey.Arn
   TaskRole:
     Type: AWS::IAM::Role
     Properties:
@@ -260,9 +293,30 @@ Resources:
     Properties:
       DomainName: !Ref DomainName
       ValidationMethod: DNS
-      DomainValidationOptions:
-        - DomainName: !Ref DomainName
-          HostedZoneId: !Ref HostedZoneId
+      SubjectAlternativeNames: !If
+        - HasWww
+        - !If
+          - HasApex
+          - [!Ref WwwDomain, !Ref ApexDomain]
+          - [!Ref WwwDomain]
+        - !If
+          - HasApex
+          - [!Ref ApexDomain]
+          - !Ref "AWS::NoValue"
+      DomainValidationOptions: !If
+        - HasWww
+        - !If
+          - HasApex
+          - - { DomainName: !Ref DomainName, HostedZoneId: !Ref HostedZoneId }
+            - { DomainName: !Ref WwwDomain, HostedZoneId: !Ref HostedZoneId }
+            - { DomainName: !Ref ApexDomain, HostedZoneId: !Ref HostedZoneId }
+          - - { DomainName: !Ref DomainName, HostedZoneId: !Ref HostedZoneId }
+            - { DomainName: !Ref WwwDomain, HostedZoneId: !Ref HostedZoneId }
+        - !If
+          - HasApex
+          - - { DomainName: !Ref DomainName, HostedZoneId: !Ref HostedZoneId }
+            - { DomainName: !Ref ApexDomain, HostedZoneId: !Ref HostedZoneId }
+          - - { DomainName: !Ref DomainName, HostedZoneId: !Ref HostedZoneId }
 
   # HTTP:80 — forwards when there's no domain; redirects to HTTPS when there is.
   Listener:
@@ -297,6 +351,30 @@ Resources:
     Properties:
       HostedZoneId: !Ref HostedZoneId
       Name: !Ref DomainName
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt Alb.DNSName
+        HostedZoneId: !GetAtt Alb.CanonicalHostedZoneID
+        EvaluateTargetHealth: false
+
+  WwwDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: HasWww
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref WwwDomain
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt Alb.DNSName
+        HostedZoneId: !GetAtt Alb.CanonicalHostedZoneID
+        EvaluateTargetHealth: false
+
+  ApexDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: HasApex
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref ApexDomain
       Type: A
       AliasTarget:
         DNSName: !GetAtt Alb.DNSName
