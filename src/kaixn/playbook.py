@@ -14,6 +14,7 @@ offline-first contract).
 from __future__ import annotations
 
 import json
+import logging
 import os
 import pathlib
 import re
@@ -22,10 +23,17 @@ import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+log = logging.getLogger(__name__)
+
 from kaixn.app import normalize_repo_url
 from kaixn.miner import (
     Observation,
+    _is_test,
+    _py_files,
+    _rel,
+    _repo_tree,
     _source_blob,
+    _source_files,
     mine,
     mine_all,
     mine_semantic_iter,
@@ -38,6 +46,13 @@ _DOC_WORKERS = int(os.getenv("KAIXN_DOC_WORKERS", "6"))
 
 def _llm_enabled() -> bool:
     return bool(os.getenv("ANTHROPIC_API_KEY"))
+
+
+def _source_coverage(root: pathlib.Path) -> int:
+    """Count of (non-test) source files the model would actually see. A grounded
+    doc/domain pass over a repo with ~0 of these can only invent, so the callers
+    refuse the LLM rather than fabricate (the JS auth-spec / Svelte-bleed bug)."""
+    return sum(1 for p in _source_files(root) if not _is_test(p))
 
 
 # --- serialization ---------------------------------------------------------
@@ -77,15 +92,50 @@ def _llm_call(prompt: str, *, model: str, max_tokens: int) -> str:
         return "".join(t for t in stream.text_stream)
 
 
-def _llm_json(prompt: str, *, model: str, max_tokens: int = 2048):
+class LLMParseError(RuntimeError):
+    """A structured LLM call returned text that wouldn't parse as JSON even after
+    a repair retry. Callers catch this to flag degraded output rather than
+    silently shipping an offline fallback under ``llm:true`` (the split-brain
+    bug: a polished doc body over a README/file-stem list, with no signal)."""
+
+
+def _extract_json(raw: str, opener: str, closer: str):
+    """Slice the outermost ``opener..closer`` span and ``json.loads`` it,
+    tolerating ```json fences and surrounding prose."""
+    return json.loads(raw[raw.find(opener): raw.rfind(closer) + 1])
+
+
+def _llm_structured(prompt: str, *, model: str, max_tokens: int,
+                    opener: str, closer: str):
+    """A structured (JSON) LLM call with ONE repair retry. Returns parsed JSON or
+    raises :class:`LLMParseError`. The retry hands the malformed reply back and
+    demands pure JSON — this is what stops a single truncated/fenced reply from
+    collapsing the whole index to the offline fallback."""
     raw = _llm_call(prompt, model=model, max_tokens=max_tokens)
-    return json.loads(raw[raw.find("["): raw.rfind("]") + 1])
+    try:
+        return _extract_json(raw, opener, closer)
+    except (json.JSONDecodeError, ValueError):
+        pass
+    repair = (
+        "Your previous reply could not be parsed as JSON. Reply with ONLY the "
+        f"JSON value (start with `{opener}`, end with `{closer}`) — no prose, no "
+        "markdown fences, no trailing commas.\n\nPREVIOUS REPLY:\n" + raw[:8000])
+    raw2 = _llm_call(repair, model=model, max_tokens=max_tokens)
+    try:
+        return _extract_json(raw2, opener, closer)
+    except (json.JSONDecodeError, ValueError) as e:
+        raise LLMParseError(str(e)[:200]) from e
+
+
+def _llm_json(prompt: str, *, model: str, max_tokens: int = 2048):
+    return _llm_structured(prompt, model=model, max_tokens=max_tokens,
+                           opener="[", closer="]")
 
 
 def _llm_obj(prompt: str, *, model: str, max_tokens: int = 2048) -> dict:
-    """Like _llm_json but for a single JSON object reply."""
-    raw = _llm_call(prompt, model=model, max_tokens=max_tokens)
-    return json.loads(raw[raw.find("{"): raw.rfind("}") + 1])
+    """Like :func:`_llm_json` but for a single JSON object reply."""
+    return _llm_structured(prompt, model=model, max_tokens=max_tokens,
+                           opener="{", closer="}")
 
 
 def _llm_text(prompt: str, *, model: str, max_tokens: int = 4096) -> str:
@@ -110,6 +160,99 @@ def _valid_links(item: dict, known: set[str]) -> list[str]:
     return [a for a in (item.get("principles") or []) if a in known][:4]
 
 
+# --- offline fallbacks -----------------------------------------------------
+def _humanize(stem: str) -> str:
+    """`playbook_store` / `apply-migrations` → `Playbook Store` / `Apply Migrations`."""
+    return re.sub(r"[_\-]+", " ", stem).strip().title()
+
+
+# README headings that are documentation scaffolding, NOT product features. The
+# offline fallback must never surface these as "PRDs" (the Docs/Status bug).
+_NON_FEATURE_HEADINGS = {
+    "docs", "documentation", "status", "overview", "about", "installation",
+    "install", "setup", "getting started", "quick start", "quickstart", "usage",
+    "license", "licence", "contributing", "contributors", "acknowledgements",
+    "acknowledgments", "roadmap", "faq", "changelog", "prerequisites", "notes",
+    "configuration", "configuration reference", "tear down", "teardown", "build",
+    "building", "testing", "tests", "development", "table of contents",
+    "references", "credits", "design principles", "how it works",
+    "rigor for free", "run the engine", "what you get", "verifying a deploy",
+}
+
+# HTTP route declarations across common frameworks (FastAPI/Flask `@app.get(...)`,
+# Express `router.post(...)`) — real "what you can DO" capabilities for the floor.
+_ROUTE_RE = re.compile(
+    r"""(?:@\w+|app|router|api)\.(get|post|put|patch|delete)\(\s*["']([^"']+)["']""",
+    re.IGNORECASE)
+
+
+def _offline_features(root: pathlib.Path) -> list[dict]:
+    """No-LLM features: HTTP endpoints (real capabilities) + README headings with
+    documentation scaffolding filtered out. Never emits 'Docs'/'Status'."""
+    feats: list[dict] = []
+    seen: set[str] = set()
+    for p in _source_files(root):
+        if _is_test(p):
+            continue
+        try:
+            text = p.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for m in _ROUTE_RE.finditer(text):
+            name = f"{m.group(1).upper()} {m.group(2).strip()}"
+            if name not in seen:
+                seen.add(name)
+                feats.append({"name": name, "summary": "HTTP endpoint",
+                              "evidence": _rel(p, root), "principles": []})
+    readme = next((p for p in root.glob("README*")), None)
+    if readme:
+        for line in readme.read_text(errors="ignore").splitlines():
+            m = re.match(r"#{2,3}\s+(.*)", line.strip())
+            if not m:
+                continue
+            name = m.group(1).strip()
+            key = re.sub(r"[^a-z ]", "", name.lower()).strip()
+            if key and key not in _NON_FEATURE_HEADINGS and name not in seen:
+                seen.add(name)
+                feats.append({"name": name, "summary": "",
+                              "evidence": readme.name, "principles": []})
+    return feats[:20]
+
+
+def _offline_specs(root: pathlib.Path) -> list[dict]:
+    """No-LLM specs: Python-module docstrings as decisions, skipping tests and
+    package dunders (the test_*/__init__ bug). Non-Python repos → one area per
+    top source dir. Humanized names, never raw file stems."""
+    import ast
+    specs: list[dict] = []
+    for p in sorted(_py_files(root)):
+        if _is_test(p) or p.name == "__init__.py":
+            continue
+        try:
+            doc = ast.get_docstring(ast.parse(p.read_text(errors="ignore")))
+        except (SyntaxError, OSError):
+            doc = None
+        if doc:
+            specs.append({"area": _humanize(p.stem),
+                          "decision": doc.strip().splitlines()[0],
+                          "rationale": "", "evidence": _rel(p, root),
+                          "principles": []})
+    if not specs:                       # non-Python repo → group by top source dir
+        from collections import defaultdict
+        groups: dict[str, list[str]] = defaultdict(list)
+        for p in _source_files(root):
+            if _is_test(p):
+                continue
+            parts = pathlib.Path(_rel(p, root)).parts
+            groups["/".join(parts[:-1][:2]) or parts[0]].append(parts[-1])
+        for key, files in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+            specs.append({"area": _humanize(key.replace("/", " ")) or "Root",
+                          "decision": f"{len(files)} source files: "
+                                      + ", ".join(sorted(files)[:6]),
+                          "rationale": "", "evidence": key, "principles": []})
+    return specs[:15]
+
+
 # --- features / PRDs -------------------------------------------------------
 def build_features(root: pathlib.Path, *, llm: bool, principles: list[dict],
                    model: str = "claude-sonnet-4-6") -> list[dict]:
@@ -130,18 +273,9 @@ def build_features(root: pathlib.Path, *, llm: bool, principles: list[dict],
             for f in feats:
                 f["principles"] = _valid_links(f, known)
             return feats
-        except Exception:
-            pass
-    # offline fallback: README section headings (no principle links)
-    readme = next((p for p in root.glob("README*")), None)
-    feats: list[dict] = []
-    if readme:
-        for line in readme.read_text(errors="ignore").splitlines():
-            m = re.match(r"#{2,3}\s+(.*)", line.strip())
-            if m:
-                feats.append({"name": m.group(1).strip(), "summary": "",
-                              "evidence": readme.name, "principles": []})
-    return feats[:20]
+        except Exception as e:                       # noqa: BLE001
+            log.warning("build_features LLM pass failed, using offline floor: %s", e)
+    return _offline_features(root)
 
 
 # --- tech specs ------------------------------------------------------------
@@ -164,34 +298,25 @@ def build_tech_specs(root: pathlib.Path, *, llm: bool, principles: list[dict],
             for s in specs:
                 s["principles"] = _valid_links(s, known)
             return specs
-        except Exception:
-            pass
-    # offline fallback: module first-line docstrings as spec notes
-    import ast
-    specs: list[dict] = []
-    for p in sorted(root.rglob("*.py")):
-        if any(d in p.parts for d in (".venv", ".git", "__pycache__")):
-            continue
-        try:
-            doc = ast.get_docstring(ast.parse(p.read_text(errors="ignore")))
-        except (SyntaxError, OSError):
-            doc = None
-        if doc:
-            specs.append({"area": p.stem,
-                          "decision": doc.strip().splitlines()[0],
-                          "rationale": "", "evidence": str(p.relative_to(root)),
-                          "principles": []})
-    return specs[:30]
+        except Exception as e:                       # noqa: BLE001
+            log.warning("build_tech_specs LLM pass failed, using offline floor: %s", e)
+    return _offline_specs(root)
 
 
 # --- combined index (balanced features + tech specs) -----------------------
 def build_index(root: pathlib.Path, *, llm: bool, principles: list[dict],
-                model: str = "claude-sonnet-4-6") -> tuple[list[dict], list[dict]]:
+                model: str = "claude-sonnet-4-6") -> tuple[list[dict], list[dict], bool]:
     """Partition the repo into PRODUCT FEATURES and TECHNICAL AREAS in ONE call,
     so the two stay balanced and distinct (separate calls let the model dump
-    everything into 'features'). Returns (features, tech_specs).
+    everything into 'features'). Returns ``(features, tech_specs, llm_index)``.
 
-    Offline → README headings (features) + module docstrings (specs)."""
+    ``llm_index`` is True only when the LLM pass actually produced the lists; it
+    is False both in offline mode and — critically — when the LLM pass was
+    *requested but fell back* to the offline floor, so the caller never ships a
+    README/file-stem list under ``llm:true`` with no signal (the split-brain bug).
+
+    Offline → API endpoints + filtered README headings (features) + module
+    docstrings (specs)."""
     known = {p["axis"] for p in principles}
     if llm:
         ctx = _read_docs(root, limit=6) + "\n\n" + _source_blob(root, max_files=20, per_file=2000)
@@ -213,8 +338,9 @@ def build_index(root: pathlib.Path, *, llm: bool, principles: list[dict],
             '"evidence","principles":[]}]}.\n\nREPO:\n' + ctx)
         try:
             # 8192: a balanced object (~13 features + ~13 specs, each with prose)
-            # overflows 4096 and truncates → JSON parse fails → silent offline
-            # fallback (the 6-PRD/30-spec shape seen on larger repos).
+            # overflows 4096 and truncates. _llm_obj now strips fences + repairs
+            # once before raising, so a single bad reply no longer silently
+            # collapses to the offline floor.
             d = _llm_obj(prompt, model=model, max_tokens=8192)
             feats = d.get("features") or []
             specs = d.get("tech_specs") or []
@@ -223,27 +349,62 @@ def build_index(root: pathlib.Path, *, llm: bool, principles: list[dict],
             for s in specs:
                 s["principles"] = _valid_links(s, known)
             if feats or specs:
-                return feats, specs
-        except Exception:
-            pass
+                return feats, specs, True
+            log.warning("build_index LLM pass returned empty lists; offline floor")
+        except Exception as e:                       # noqa: BLE001
+            log.warning("build_index LLM pass failed (%s); offline floor", e)
     # offline fallback: reuse the single-list builders (no LLM inside)
     return (build_features(root, llm=False, principles=principles, model=model),
-            build_tech_specs(root, llm=False, principles=principles, model=model))
+            build_tech_specs(root, llm=False, principles=principles, model=model),
+            False)
 
 
 # --- full templated documents (PRD / Tech Spec) ----------------------------
 # Classic templates — the human-facing structure each generated doc follows, and
 # the structure an agent can rely on when reading the knowledge back.
+#   Tightened for information density: the goal is the LEAST a PM/EM must read to
+#   understand the proposal. The spec carries a required Mermaid `sequenceDiagram`
+#   (the runtime flow) so the shape of the proposal is grasped in one glance, and
+#   the three overlapping scope/design/data/API sections are merged so nothing is
+#   restated three times (the ~1,800-word-wall problem).
 DOC_TEMPLATES: dict[str, list[str]] = {
-    "prd": ["Overview", "Problem & Context", "Goals", "Non-Goals",
-            "User Stories", "Functional Requirements", "UX & Key Flows",
-            "Success Metrics", "Dependencies & Risks"],
-    "spec": ["Context & Background", "Goals", "Non-Goals", "Proposed Design",
-             "Data Model", "APIs & Interfaces", "Key Decisions & Trade-offs",
-             "Sequencing & Rollout", "Risks & Open Questions"],
+    "prd": ["Overview", "Problem & Context", "Goals & Non-Goals",
+            "Key User Flows", "Functional Requirements", "Success Metrics & Risks"],
+    "spec": ["Context", "Runtime Flow", "Data & Interfaces",
+             "Key Decisions & Trade-offs", "Risks & Open Questions"],
 }
 _DOC_KIND_NAME = {"prd": "Product Requirements Document (PRD)",
                   "spec": "Technical Specification"}
+
+# Density rules shared by every generated doc — read by a busy PM/EM.
+_DENSITY_RULES = (
+    "DENSITY RULES (maximize signal per word):\n"
+    "• Be terse — aim for UNDER 800 words total. Prefer tables and tight bullets "
+    "to paragraphs.\n"
+    "• Never restate the same fact in two sections. Do not document private "
+    "helpers or restate the section title.\n"
+    "• Fold goals and non-goals into one 2-column in-scope / out-of-scope table.\n")
+
+# The spec's signature element: one grounded sequence diagram so the flow of the
+# proposal is legible at a glance (the explicit ask).
+_SPEC_FLOW_RULE = (
+    "• The 'Runtime Flow' section MUST contain exactly ONE Mermaid sequence "
+    "diagram inside a ```mermaid fenced block whose first line is "
+    "`sequenceDiagram`. Participants are REAL modules/classes/functions from the "
+    "source below; arrows are REAL calls labelled with the real function name; "
+    "include the `alt`/`opt` branches that exist in the code. At most two "
+    "sentences of prose around it.\n")
+
+
+def _insufficient_source_doc(title: str, summary: str, sections: list[str]) -> str:
+    """An honest placeholder for a spec whose repo has ~no readable source. A
+    grounding tool must say 'I can't see the code' rather than invent a spec (the
+    fabricated JS auth spec / Svelte-bleed failure)."""
+    return (f"# {title}\n\n" + (f"> {summary}\n\n" if summary else "") +
+            "> ⚠ **Insufficient source coverage.** No readable source files were "
+            "found for this area, so a grounded specification cannot be generated "
+            "without inventing it. Check the clone, or connect a repo whose source "
+            "is in a supported language.\n")
 
 
 def build_doc(root: pathlib.Path, *, kind: str, title: str, summary: str = "",
@@ -251,55 +412,99 @@ def build_doc(root: pathlib.Path, *, kind: str, title: str, summary: str = "",
     """Generate ONE full, classically-templated document (markdown) for a feature
     (kind='prd') or technical area (kind='spec'), grounded in the repo.
 
-    Offline → a section skeleton so the structure still persists."""
+    Specs carry a required Mermaid ``sequenceDiagram`` and refuse to generate when
+    there's no source to ground them. Offline → a section skeleton."""
     sections = DOC_TEMPLATES[kind]
     if llm:
-        ctx = (_read_docs(root) if kind == "prd"
-               else _source_blob(root, max_files=25, per_file=3000))
+        if kind == "spec":
+            if _source_coverage(root) == 0:        # no code → don't fabricate
+                return _insufficient_source_doc(title, summary, sections)
+            # repo tree anchors the model to THIS repo (stops free-association onto
+            # another project); per_file=8000 stops big modules being truncated
+            # into invented/"truncated signature" claims.
+            ctx = ("REPO FILES:\n" + _repo_tree(root) + "\n\nSOURCE:\n"
+                   + _source_blob(root, max_files=25, per_file=8000))
+        else:
+            ctx = _read_docs(root)
+            if not ctx.strip() and _source_coverage(root) == 0:
+                return _insufficient_source_doc(title, summary, sections)
         prompt = (
             f"Write a {_DOC_KIND_NAME[kind]} for "
             f"\"{title}\"" + (f" — {summary}" if summary else "") +
-            " of THIS repository. Ground every statement in the actual code/docs "
-            "below; do not invent capabilities the repo doesn't have. Be concrete "
-            "and specific to this codebase (name real modules, types, endpoints). "
-            "Use bullet lists and tables where natural.\n\nStart with a single H1 "
-            "title line, then EXACTLY these H2 sections, in order:\n" +
-            "\n".join(f"## {s}" for s in sections) +
+            " of THIS repository. Ground EVERY statement in the code/docs below; "
+            "never invent capabilities, types, or signatures that aren't present — "
+            "if something isn't in the context, say so rather than guess. Name real "
+            "modules, types, and endpoints.\n\n" + _DENSITY_RULES +
+            (_SPEC_FLOW_RULE if kind == "spec" else "") +
+            "\nStart with a single H1 title line, then EXACTLY these H2 sections, "
+            "in order:\n" + "\n".join(f"## {s}" for s in sections) +
             "\n\nREPO CONTEXT:\n" + ctx)
         try:
             return _llm_text(prompt, model=model, max_tokens=4096)
-        except Exception:
-            pass
+        except Exception as e:                       # noqa: BLE001
+            log.warning("build_doc LLM pass failed for %r (%s); offline skeleton", title, e)
     return (f"# {title}\n\n" + (f"> {summary}\n\n" if summary else "") +
             "\n\n".join(f"## {s}\n\n_Offline mode — connect an API key to "
                         "generate this section._" for s in sections))
 
 
 # --- domain model (DDD graph) ----------------------------------------------
-def _clean_mermaid(text: str) -> str:
+# Every Mermaid diagram type we accept. Order matters only for the prefix check.
+# (Previously hard-coded to class/graph/flowchart, which silently corrupted a
+# sequenceDiagram by prepending `classDiagram\n` — see _spec sequence diagrams.)
+MERMAID_KINDS = ("classDiagram", "sequenceDiagram", "stateDiagram-v2",
+                 "stateDiagram", "erDiagram", "flowchart", "graph", "journey",
+                 "gantt", "pie", "mindmap")
+
+
+def _clean_mermaid(text: str, *, default_kind: str = "classDiagram") -> str:
     """Strip code fences / prose around a mermaid diagram and ensure it declares
-    a diagram type."""
+    a known diagram type. ``default_kind`` is only prepended when the text starts
+    with no recognizable kind (never override a real ``sequenceDiagram`` etc.)."""
     t = (text or "").strip()
     if "```" in t:                                   # pull out a fenced block
-        parts = t.split("```")
-        for p in parts:
-            p = p.strip()
+        for p in (x.strip() for x in t.split("```")):
             if p.startswith("mermaid"):
                 t = p[len("mermaid"):].strip(); break
-            if p.startswith(("classDiagram", "graph", "flowchart")):
+            if p.startswith(MERMAID_KINDS):
                 t = p; break
-    if not t.startswith(("classDiagram", "graph", "flowchart")):
-        t = "classDiagram\n" + t
+    if not t.startswith(MERMAID_KINDS):
+        t = f"{default_kind}\n" + t
     return t
 
 
-def _domain_offline(root: pathlib.Path) -> dict:
-    """No-LLM domain map: classes + inheritance/association edges from the AST."""
+def _ann_type_names(node) -> list[str]:
+    """Identifier names referenced in a type annotation AST — unwraps Optional[X],
+    list[X], dict[K, V], A | B, and `Forward` string refs to their inner names."""
     import ast
-    names: dict[str, list[str]] = {}      # class -> field annotations (type names)
+    out: list[str] = []
+    for n in ast.walk(node):
+        if isinstance(n, ast.Name):
+            out.append(n.id)
+        elif isinstance(n, ast.Attribute):
+            out.append(n.attr)
+        elif isinstance(n, ast.Constant) and isinstance(n.value, str):
+            out.append(n.value.strip("'\" "))     # forward-ref string annotation
+    return out
+
+
+# A domain extraction is (fields, bases, refs, docs) keyed by type name:
+#   fields[T] = ["name: Type", ...]   bases[T] = [local base names]
+#   refs[T]   = {referenced local type names}   docs[T] = one-line role/description
+_Domain = tuple[dict[str, list[str]], dict[str, list[str]], dict[str, set[str]], dict[str, str]]
+
+
+def _domain_ast(root: pathlib.Path) -> _Domain:
+    """Python domain via the AST: classes, local bases, typed-field/ctor refs, and
+    the class docstring's first line (so a field-less service isn't described '—')."""
+    import ast
+    fields: dict[str, list[str]] = {}
     bases: dict[str, list[str]] = {}
-    for p in (x for x in root.rglob("*.py")
-              if not any(d in x.parts for d in (".venv", ".git", "__pycache__", "tests"))):
+    refs: dict[str, set[str]] = {}
+    docs: dict[str, str] = {}
+    for p in _py_files(root):
+        if _is_test(p):
+            continue
         try:
             tree = ast.parse(p.read_text(encoding="utf-8", errors="ignore"))
         except (SyntaxError, OSError):
@@ -307,50 +512,247 @@ def _domain_offline(root: pathlib.Path) -> dict:
         for node in ast.walk(tree):
             if not isinstance(node, ast.ClassDef):
                 continue
-            fields: list[str] = []
+            fs: list[str] = []
+            ref: set[str] = set()
             for b in node.body:
                 if isinstance(b, ast.AnnAssign) and isinstance(b.target, ast.Name):
-                    ann = getattr(b.annotation, "id", None) or getattr(
-                        getattr(b.annotation, "value", None), "id", None)
-                    fields.append(b.target.id + (f": {ann}" if ann else ""))
-            names[node.name] = fields[:5]
+                    tn = _ann_type_names(b.annotation)
+                    fs.append(b.target.id + (f": {tn[0]}" if tn else ""))
+                    ref.update(tn)
+                elif isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef)) and b.name == "__init__":
+                    for a in b.args.args:
+                        if a.annotation is not None:
+                            ref.update(_ann_type_names(a.annotation))
+            doc = (ast.get_docstring(node) or "").strip().splitlines()
+            fields[node.name] = fs[:5]
             bases[node.name] = [b.id for b in node.bases if isinstance(b, ast.Name)]
-    keep = list(names)[:20]
+            refs[node.name] = ref
+            docs[node.name] = doc[0][:80] if doc else ""
+    return fields, bases, refs, docs
+
+
+# Type declarations across curly-brace languages (TS/JS/Go/Rust/Java/C#/C++/Swift…).
+_DECL_RE = re.compile(
+    r"\b(?:export\s+)?(?:abstract\s+)?"
+    r"(?:class|interface|struct|enum|trait|protocol)\s+([A-Z]\w+)", re.MULTILINE)
+_GO_TYPE_RE = re.compile(r"\btype\s+([A-Z]\w+)\s+(?:struct|interface)\b")
+_TS_TYPE_RE = re.compile(r"\btype\s+([A-Z]\w+)\s*=")
+# inheritance: `class X extends Y`, `class X implements Y`, `X: Y`, Rust `impl T for X`.
+_EXTENDS_RE = re.compile(r"\b([A-Z]\w+)\s+(?:extends|implements|:)\s+([A-Z]\w+)")
+_IMPL_FOR_RE = re.compile(r"\bimpl\s+([A-Z]\w+)\s+for\s+([A-Z]\w+)")
+
+
+def _domain_regex(root: pathlib.Path) -> _Domain:
+    """Language-agnostic domain via regex for non-Python repos (the AST path is
+    Python-only, which is why JS/Go/Rust repos used to ship an empty diagram).
+    Nodes = declared types; edges = extends/implements + co-mention within a
+    type's neighbourhood. A heuristic floor — the LLM path is primary."""
+    fields: dict[str, list[str]] = {}
+    bases: dict[str, list[str]] = {}
+    refs: dict[str, set[str]] = {}
+    blocks: dict[str, str] = {}            # type -> ~window of text after its decl
+    for p in _source_files(root):
+        if _is_test(p) or p.suffix == ".py":
+            continue
+        try:
+            text = p.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        decls = sorted((m.start(), m.group(1))
+                       for rx in (_DECL_RE, _GO_TYPE_RE, _TS_TYPE_RE)
+                       for m in rx.finditer(text))
+        for i, (pos, name) in enumerate(decls):
+            fields.setdefault(name, [])
+            bases.setdefault(name, [])
+            refs.setdefault(name, set())
+            # bound the block at the NEXT declaration so co-mention doesn't bleed
+            # across types into a fully-connected hairball.
+            end = decls[i + 1][0] if i + 1 < len(decls) else pos + 1200
+            blocks[name] = text[pos:min(end, pos + 1200)]
+        for m in _EXTENDS_RE.finditer(text):
+            child, parent = m.group(1), m.group(2)
+            bases.setdefault(child, []).append(parent)
+        for m in _IMPL_FOR_RE.finditer(text):     # Rust: impl Trait for Type
+            trait, typ = m.group(1), m.group(2)
+            bases.setdefault(typ, []).append(trait)
+    local = set(fields)
+    bases = {k: [b for b in v if b in local] for k, v in bases.items()}
+    for name, block in blocks.items():            # co-mention → association
+        for other in re.findall(r"\b([A-Z]\w+)\b", block[len(name):]):
+            if other in local and other != name and other not in bases.get(name, []):
+                refs[name].add(other)             # not a base → don't dup inheritance
+    return fields, bases, refs, {}
+
+
+def _render_domain(dom: _Domain, *, cap: int = 16) -> dict:
+    """Shared renderer: derive edges, collapse pure-leaf implementations under
+    their base (so 3 near-identical `*Embedder` boxes become one annotated node),
+    rank by connectivity, and emit a Mermaid classDiagram + entity list."""
+    fields, bases, refs, docs = dom
+    local = set(fields)
+
+    # collapse polymorphic impls into one annotated node (so 3 near-identical
+    # `*Embedder` boxes don't clutter the model). Two ways an impl attaches:
+    #   (a) explicit inheritance — a local base (TS `extends`, Python `class X(Base)`);
+    #   (b) structural — a field-less orphan NAMED `<Something>Base` (the duck-typed
+    #       Protocol/ABC pattern, where FakeEmbedder never inherits Embedder).
+    referenced = {r for s in refs.values() for r in s}
+    children: dict[str, list[str]] = {}
+    for c in fields:
+        for base in bases.get(c, []):
+            children.setdefault(base, []).append(c)
+
+    def _is_leaf(k: str) -> bool:
+        return (not fields.get(k) and k not in referenced and not children.get(k))
+
+    collapsed: set[str] = set()
+    impls: dict[str, list[str]] = {}
+    for base in fields:                           # (a) inheritance-based
+        leaves = [k for k in children.get(base, []) if _is_leaf(k)]
+        # (b) name-suffix-based: orphan field-less `*Base` with no base of its own
+        leaves += [k for k in fields if k != base and k.endswith(base)
+                   and len(k) > len(base) and _is_leaf(k) and not bases.get(k)
+                   and k not in leaves]
+        if len(leaves) >= 2:
+            collapsed.update(leaves)
+            impls[base] = leaves
+
+    edges: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for c in fields:
+        if c in collapsed:
+            continue
+        for base in bases.get(c, []):
+            if base in local and base not in collapsed and (e := ("inh", base, c)) not in seen:
+                seen.add(e); edges.append(e)
+        for r in refs.get(c, ()):
+            if r in local and r != c and r not in collapsed and (e := ("assoc", c, r)) not in seen:
+                seen.add(e); edges.append(e)
+
+    nodes = [c for c in fields if c not in collapsed]
+    degree: dict[str, int] = {c: 0 for c in nodes}
+    for _, a, b in edges:
+        if a in degree: degree[a] += 1
+        if b in degree: degree[b] += 1
+    keep = sorted(nodes, key=lambda c: (-degree[c], c))[:cap]
+    keepset = set(keep)
+
+    def _describe(c: str) -> str:
+        parts = list(fields.get(c, []))
+        if c in impls:
+            parts = [*parts, "impls: " + ", ".join(_short_impl(k, c) for k in impls[c])]
+        return ", ".join(parts) or docs.get(c) or (
+            "implements " + ", ".join(bases[c]) if bases.get(c) else "—")
+
     lines = ["classDiagram"]
     for c in keep:
-        body = "".join(f"  +{f}\n" for f in names[c])
+        body = "".join(f"  +{f}\n" for f in fields.get(c, []))
+        if c in impls:
+            body += f"  +«{len(impls[c])} impls»\n"
         lines.append(f"class {c} {{\n{body}}}" if body else f"class {c}")
-    for c in keep:
-        for b in bases.get(c, []):
-            if b in names:
-                lines.append(f"{b} <|-- {c}")
-    entities = [{"name": c, "description": ", ".join(names[c]) or "—"} for c in keep]
+    for kind, a, b in edges:
+        if a in keepset and b in keepset:
+            lines.append(f"{a} <|-- {b}" if kind == "inh" else f"{a} --> {b}")
+    entities = [{"name": c, "description": _describe(c)} for c in keep]
     return {"mermaid": "\n".join(lines), "entities": entities}
+
+
+def _short_impl(name: str, base: str) -> str:
+    """`OpenAIEmbedder` under base `Embedder` → `OpenAI` (drop the base suffix)."""
+    return name[: -len(base)] if name.endswith(base) and len(name) > len(base) else name
+
+
+def _domain_offline(root: pathlib.Path) -> dict:
+    """No-LLM domain map. Python → AST; otherwise a language-agnostic regex pass.
+    Both feed the shared renderer (collapse + ranking), so the result reads as a
+    connected model, not a row of standalone boxes — for ANY language."""
+    ast_dom = _domain_ast(root)
+    if len(ast_dom[0]) >= 4:                       # enough Python classes to model
+        return _render_domain(ast_dom)
+    rx_dom = _domain_regex(root)
+    # whichever extractor found more types wins (handles mixed + non-Python repos)
+    return _render_domain(rx_dom if len(rx_dom[0]) > len(ast_dom[0]) else ast_dom)
+
+
+_EDGE_RE = re.compile(
+    r"^\s*([A-Za-z_]\w*)\s*(?:<\|--|--\|>|\.\.\|>|\*--|o--|\.\.>|-->|--)\s*([A-Za-z_]\w*)")
+
+
+def _prune_orphans(mermaid: str) -> str:
+    """Drop class boxes that participate in NO relationship, so a strong-nodes /
+    weak-edges LLM reply contributes its connected core instead of being discarded
+    wholesale to the offline graph (and instead of shipping standalone boxes)."""
+    lines = mermaid.splitlines()
+    connected: set[str] = set()
+    for ln in lines:
+        if (m := _EDGE_RE.match(ln)):
+            connected.update((m.group(1), m.group(2)))
+    if not connected:
+        return mermaid
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        ln = lines[i]
+        block_open = re.match(r"\s*class\s+([A-Za-z_]\w*)\s*\{", ln)
+        if block_open:
+            if "}" in ln:                              # single-line block
+                if block_open.group(1) in connected:
+                    out.append(ln)
+                i += 1
+                continue
+            block = [ln]; i += 1
+            while i < len(lines) and "}" not in lines[i]:
+                block.append(lines[i]); i += 1
+            if i < len(lines):
+                block.append(lines[i]); i += 1
+            if block_open.group(1) in connected:
+                out.extend(block)
+            continue
+        bare = re.match(r"\s*class\s+([A-Za-z_]\w*)\s*$", ln)
+        if bare and bare.group(1) not in connected:
+            i += 1
+            continue
+        out.append(ln); i += 1
+    return "\n".join(out)
 
 
 def build_domain(root: pathlib.Path, *, llm: bool,
                  model: str = "claude-sonnet-4-6") -> dict:
     """Extract the domain model — key objects and how they interact — as a Mermaid
-    classDiagram plus an entity list. Offline → an AST-derived class graph."""
-    if llm:
+    classDiagram plus an entity list. Offline → a language-agnostic class graph.
+
+    Refuses the LLM call when there's no source to ground it (a doc tool must fail
+    loud, not invent a domain for a repo it can't see)."""
+    if llm and _source_coverage(root) > 0:
         blob = _source_blob(root, max_files=30, per_file=2500)
         prompt = (
             "Extract the DOMAIN MODEL of this codebase: the key domain objects "
             "(entities, aggregates, value objects, and services) and how they "
-            "interact. Output a Mermaid `classDiagram`: declare each key class with "
-            "its 2-5 most important fields, and the relationships between them — "
-            "association (-->), inheritance (<|--), composition (*--), dependency "
-            "(..>) — each with a short label. Keep to the ~15 most important "
-            "objects. Ground strictly in the code below.\n\n"
-            'Reply JSON: {"mermaid": "classDiagram\\n...", '
+            "interact. Choose the ~12-15 objects that carry the domain — skip "
+            "framework/HTTP request DTOs unless they ARE the domain.\n\n"
+            "Output a Mermaid `classDiagram` with each key class (2-5 important "
+            "fields each) AND — most importantly — the RELATIONSHIPS between them: "
+            "inheritance `Base <|-- Derived`, association `A --> B : label`, "
+            "composition `A *-- B`, dependency `A ..> B : uses`. EVERY class must "
+            "connect to at least one other; a diagram of disconnected classes with "
+            "no edges is WRONG — trace how objects reference, contain, or depend on "
+            "each other in the code and draw those edges. Ground strictly in the "
+            "code below.\n\n"
+            'Reply JSON: {"mermaid": "classDiagram\\n  ClassA --> ClassB : rel\\n  ...", '
             '"entities": [{"name","description"}]}.\n\nSOURCE:\n' + blob)
         try:
-            d = _llm_obj(prompt, model=model, max_tokens=2048)
-            d["mermaid"] = _clean_mermaid(d.get("mermaid", ""))
-            d.setdefault("entities", [])
-            return d
-        except Exception:
-            pass
+            d = _llm_obj(prompt, model=model, max_tokens=4096)
+            mermaid = _prune_orphans(_clean_mermaid(d.get("mermaid", "")))
+            # Keep the LLM diagram only if it has real relationships; otherwise the
+            # offline graph (which derives connections deterministically) is better
+            # than a row of standalone boxes.
+            if any(rel in mermaid for rel in ("<|--", "-->", "*--", "..>", "--|>", "o--")):
+                d["mermaid"] = mermaid
+                d.setdefault("entities", [])
+                return d
+            log.warning("build_domain LLM diagram had no edges; offline graph")
+        except Exception as e:                       # noqa: BLE001
+            log.warning("build_domain LLM pass failed (%s); offline graph", e)
     return _domain_offline(root)
 
 
@@ -360,12 +762,13 @@ def build(root: str | pathlib.Path, *, llm: bool | None = None,
     root = pathlib.Path(root)
     use_llm = _llm_enabled() if llm is None else llm
     principles = [_obs_dict(o) for o in mine_all(root, llm=use_llm, model=model)]
-    features, specs = build_index(root, llm=use_llm, principles=principles, model=model)
+    features, specs, llm_index = build_index(root, llm=use_llm, principles=principles, model=model)
     return {
         "features": features,
         "tech_specs": specs,
         "principles": principles,
         "llm": use_llm,
+        "llm_index": llm_index,
     }
 
 
@@ -426,12 +829,23 @@ def build_stream(root: str | pathlib.Path, *, llm: bool | None = None,
     #    never lost to an interrupted doc phase.
     if use_llm:
         yield {"event": "status", "step": "mapping the domain model…"}
-    yield {"event": "domain", "domain": build_domain(root, llm=use_llm, model=model)}
+    domain = build_domain(root, llm=use_llm, model=model)
+    # Validation gate: a repo with source must yield a connected, non-empty model.
+    # If not, say so (an empty `classDiagram` silently asserts nothing connects).
+    has_edges = any(r in domain.get("mermaid", "")
+                    for r in ("<|--", "-->", "*--", "..>", "--|>", "o--"))
+    if _source_coverage(root) > 0 and not (has_edges and domain.get("entities")):
+        yield {"event": "status", "step": "⚠ domain model unavailable — no "
+               "connected entities could be extracted for this repo's language."}
+    yield {"event": "domain", "domain": domain}
 
     # 3) feature + tech-spec LISTS — emit immediately (stable slugs) so the
     #    default PRDs/Tech-Specs tabs populate within seconds.
     yield {"event": "status", "step": "extracting features & tech specs…"}
-    features, specs = build_index(root, llm=use_llm, principles=principles, model=model)
+    features, specs, llm_index = build_index(root, llm=use_llm, principles=principles, model=model)
+    if use_llm and not llm_index:        # LLM requested but the index fell back
+        yield {"event": "status", "step": "⚠ feature/spec extraction degraded to "
+               "the offline floor (LLM index failed) — names may be approximate."}
     items = _with_slugs("prd", [{"title": f.get("name", ""), **f} for f in features]) \
         + _with_slugs("spec", [{"title": s.get("area", ""), **s} for s in specs])
     yield {"event": "features", "items": [i for i in items if i["kind"] == "prd"]}
