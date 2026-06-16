@@ -393,7 +393,8 @@ _SPEC_FLOW_RULE = (
     "`sequenceDiagram`. Participants are REAL modules/classes/functions from the "
     "source below; arrows are REAL calls labelled with the real function name; "
     "include the `alt`/`opt` branches that exist in the code. At most two "
-    "sentences of prose around it.\n")
+    "sentences of prose around it. In diagram text use commas, NOT semicolons "
+    "(a `;` breaks Mermaid rendering).\n")
 
 
 def _insufficient_source_doc(title: str, summary: str, sections: list[str]) -> str:
@@ -440,7 +441,7 @@ def build_doc(root: pathlib.Path, *, kind: str, title: str, summary: str = "",
             "in order:\n" + "\n".join(f"## {s}" for s in sections) +
             "\n\nREPO CONTEXT:\n" + ctx)
         try:
-            return _llm_text(prompt, model=model, max_tokens=4096)
+            return _sanitize_doc_mermaid(_llm_text(prompt, model=model, max_tokens=4096))
         except Exception as e:                       # noqa: BLE001
             log.warning("build_doc LLM pass failed for %r (%s); offline skeleton", title, e)
     return (f"# {title}\n\n" + (f"> {summary}\n\n" if summary else "") +
@@ -457,6 +458,24 @@ MERMAID_KINDS = ("classDiagram", "sequenceDiagram", "stateDiagram-v2",
                  "gantt", "pie", "mindmap")
 
 
+def _sanitize_mermaid(code: str) -> str:
+    """Fix render-breakers in generated Mermaid. ``;`` is a Mermaid statement
+    separator: a model writing `A->>B: parse sig; check window` splits into two
+    statements, the second arrow-less → "Syntax error in text" and the diagram
+    fails to render. We never use ``;`` structurally, so fold it to ``,``."""
+    return (code or "").replace(";", ",")
+
+
+_MERMAID_FENCE_RE = re.compile(r"(```\s*mermaid[^\n]*\n)(.*?)(```)", re.S | re.I)
+
+
+def _sanitize_doc_mermaid(markdown: str) -> str:
+    """Sanitize every ```mermaid block embedded in a generated document (the spec
+    sequence diagrams), so a stray ``;`` doesn't break in-browser rendering."""
+    return _MERMAID_FENCE_RE.sub(
+        lambda m: m.group(1) + _sanitize_mermaid(m.group(2)) + m.group(3), markdown)
+
+
 def _clean_mermaid(text: str, *, default_kind: str = "classDiagram") -> str:
     """Strip code fences / prose around a mermaid diagram and ensure it declares
     a known diagram type. ``default_kind`` is only prepended when the text starts
@@ -470,7 +489,7 @@ def _clean_mermaid(text: str, *, default_kind: str = "classDiagram") -> str:
                 t = p; break
     if not t.startswith(MERMAID_KINDS):
         t = f"{default_kind}\n" + t
-    return t
+    return _sanitize_mermaid(t)
 
 
 def _ann_type_names(node) -> list[str]:
