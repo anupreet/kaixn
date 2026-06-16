@@ -24,6 +24,17 @@ from dataclasses import dataclass, field
 _SKIP_DIRS = {".venv", "venv", ".git", "__pycache__", "build", "dist", "node_modules"}
 _SNAKE = re.compile(r"[a-z_][a-z0-9_]*$")
 
+# Source extensions for the LLM-fed context blob (NOT the Python-AST miner, which
+# stays on *.py). A non-Python repo must still feed real source — otherwise a
+# grounded doc/domain pass is forced to invent (the JS-fabrication bug).
+_SOURCE_EXTS = {
+    ".py", ".pyi",
+    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte",
+    ".go", ".rs", ".java", ".kt", ".kts", ".scala", ".swift", ".dart",
+    ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh", ".m", ".mm",
+    ".cs", ".rb", ".php", ".ex", ".exs", ".erl", ".clj", ".ml", ".sql",
+}
+
 
 @dataclass(slots=True)
 class Site:
@@ -59,9 +70,34 @@ def _py_files(root: pathlib.Path) -> list[pathlib.Path]:
             if not any(part in _SKIP_DIRS for part in p.parts)]
 
 
+def _source_files(root: pathlib.Path) -> list[pathlib.Path]:
+    """Language-agnostic source files for LLM context. Skips vendored/build dirs
+    (``_SKIP_DIRS``) and minified bundles. Distinct from ``_py_files`` so the
+    Python-AST detectors stay Python-only while the model-fed blob spans any
+    language."""
+    out: list[pathlib.Path] = []
+    for p in root.rglob("*"):
+        if (p.suffix.lower() not in _SOURCE_EXTS
+                or any(part in _SKIP_DIRS for part in p.parts)
+                or p.name.endswith((".min.js", ".min.css", ".bundle.js"))
+                or not p.is_file()):
+            continue
+        out.append(p)
+    return out
+
+
+def _repo_tree(root: pathlib.Path, *, limit: int = 200) -> str:
+    """A compact listing of source-file paths — anchors a thin-context prompt to
+    THIS repo's inventory so the model can't free-associate onto another project."""
+    return "\n".join(sorted(_rel(p, root) for p in _source_files(root))[:limit])
+
+
 def _is_test(path: pathlib.Path) -> bool:
-    return path.name.startswith("test_") or any(
-        part in ("tests", "test") for part in path.parts)
+    name = path.name
+    return (name.startswith("test_")
+            or ".test." in name or ".spec." in name           # JS/TS conventions
+            or any(part in ("tests", "test", "__tests__", "spec")
+                   for part in path.parts))
 
 
 def _parse(path: pathlib.Path) -> ast.Module | None:
@@ -312,8 +348,12 @@ DESIGN_AXES: list[tuple[str, str]] = [
 
 
 def _source_blob(root: pathlib.Path, *, max_files: int, per_file: int) -> str:
-    """A bounded, central-first view of the source for the model to read."""
-    files = [p for p in _py_files(root) if not _is_test(p)]
+    """A bounded, central-first view of the source for the model to read.
+
+    Language-agnostic (``_source_files``): a non-Python repo must still feed real
+    source, or a grounded doc/domain pass is forced to invent capabilities the
+    code doesn't have."""
+    files = [p for p in _source_files(root) if not _is_test(p)]
     # central-first: bigger files tend to be the load-bearing modules
     files.sort(key=lambda p: p.stat().st_size, reverse=True)
     chunks = []
