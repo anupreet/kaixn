@@ -584,11 +584,49 @@ def _domain_regex(root: pathlib.Path) -> _Domain:
     return fields, bases, refs, {}
 
 
-def _render_domain(dom: _Domain, *, cap: int = 16) -> dict:
-    """Shared renderer: derive edges, collapse pure-leaf implementations under
-    their base (so 3 near-identical `*Embedder` boxes become one annotated node),
-    rank by connectivity, and emit a Mermaid classDiagram + entity list."""
+# Heuristic infra markers — names that signal a persistence/transport/plumbing
+# type rather than a domain concept. Conservative (precision over recall) so we
+# don't drop real domain types; note `Record` is intentionally absent (NormRecord
+# IS domain). The LLM path classifies far better; this is the offline floor.
+_INFRA_SUFFIX = ("Store", "Repository", "Repo", "Dao", "Config", "Settings",
+                 "Options", "Dto", "Request", "Response", "Client", "Adapter",
+                 "Factory", "Builder", "Manager", "Runner", "Worker", "Job",
+                 "Mapper", "Serializer", "Controller", "Middleware", "Router",
+                 "Error", "Exception", "Result", "Report")
+_INFRA_PREFIX = ("Pg", "Postgres", "Sql", "Sqlite", "Mongo", "Redis", "InMemory",
+                 "Http", "Grpc", "Mock", "Fake", "Stub")
+
+
+def _is_infra(name: str) -> bool:
+    """A type whose NAME marks it as plumbing (persistence impl, DTO, config,
+    client, result wrapper…) — excluded from the DDD model."""
+    return name.endswith(_INFRA_SUFFIX) or name.startswith(_INFRA_PREFIX)
+
+
+def _ddd_kind(name: str, flds: list[str], bs: list[str]) -> str:
+    """Coarse DDD stereotype for the offline floor (the LLM path tags precisely)."""
+    bset = set(bs)
+    if any("Enum" in b for b in bs):
+        return "Value Object"                          # enums are value objects
+    if {"Protocol", "ABC"} & bset:
+        return ("Repository" if name.endswith(("Reader", "Repository", "Store"))
+                else "Service")
+    if any(f.split(":")[0].strip() in ("id", "uuid", "pk") for f in flds):
+        return "Entity"
+    if not flds:
+        return "Service"                               # behaviour, no state
+    return "Value Object" if len(flds) <= 4 else "Entity"
+
+
+def _render_domain(dom: _Domain, *, cap: int = 16, ddd: bool = True) -> dict:
+    """Shared renderer: optionally drop infrastructure (``ddd``), derive edges,
+    collapse pure-leaf implementations under their base (so 3 near-identical
+    `*Embedder` boxes become one annotated node), rank by connectivity, and emit a
+    Mermaid classDiagram (with DDD stereotypes) + entity list."""
     fields, bases, refs, docs = dom
+    if ddd:                                            # keep the domain, drop plumbing
+        fields = {k: v for k, v in fields.items() if not _is_infra(k)}
+    kinds = {c: _ddd_kind(c, fields[c], bases.get(c, [])) for c in fields}
     local = set(fields)
 
     # collapse polymorphic impls into one annotated node (so 3 near-identical
@@ -646,14 +684,16 @@ def _render_domain(dom: _Domain, *, cap: int = 16) -> dict:
 
     lines = ["classDiagram"]
     for c in keep:
-        body = "".join(f"  +{f}\n" for f in fields.get(c, []))
+        body = f"  <<{kinds[c]}>>\n" if kinds.get(c) else ""
+        body += "".join(f"  +{f}\n" for f in fields.get(c, []))
         if c in impls:
             body += f"  +«{len(impls[c])} impls»\n"
-        lines.append(f"class {c} {{\n{body}}}" if body else f"class {c}")
+        lines.append(f"class {c} {{\n{body}}}")
     for kind, a, b in edges:
         if a in keepset and b in keepset:
             lines.append(f"{a} <|-- {b}" if kind == "inh" else f"{a} --> {b}")
-    entities = [{"name": c, "description": _describe(c)} for c in keep]
+    entities = [{"name": c, "kind": kinds.get(c, ""), "description": _describe(c)}
+                for c in keep]
     return {"mermaid": "\n".join(lines), "entities": entities}
 
 
@@ -726,20 +766,34 @@ def build_domain(root: pathlib.Path, *, llm: bool,
     if llm and _source_coverage(root) > 0:
         blob = _source_blob(root, max_files=30, per_file=2500)
         prompt = (
-            "Extract the DOMAIN MODEL of this codebase: the key domain objects "
-            "(entities, aggregates, value objects, and services) and how they "
-            "interact. Choose the ~12-15 objects that carry the domain — skip "
-            "framework/HTTP request DTOs unless they ARE the domain.\n\n"
-            "Output a Mermaid `classDiagram` with each key class (2-5 important "
-            "fields each) AND — most importantly — the RELATIONSHIPS between them: "
-            "inheritance `Base <|-- Derived`, association `A --> B : label`, "
-            "composition `A *-- B`, dependency `A ..> B : uses`. EVERY class must "
-            "connect to at least one other; a diagram of disconnected classes with "
-            "no edges is WRONG — trace how objects reference, contain, or depend on "
-            "each other in the code and draw those edges. Ground strictly in the "
-            "code below.\n\n"
-            'Reply JSON: {"mermaid": "classDiagram\\n  ClassA --> ClassB : rel\\n  ...", '
-            '"entities": [{"name","description"}]}.\n\nSOURCE:\n' + blob)
+            "Model the BUSINESS DOMAIN of this codebase as a DOMAIN-DRIVEN DESIGN "
+            "model — the ubiquitous language a domain expert would recognize, NOT "
+            "a class or database diagram. Capture the DOMAIN, not the plumbing.\n\n"
+            "INCLUDE only domain concepts, each tagged with its DDD stereotype:\n"
+            "  • <<Aggregate Root>> — an entity that owns a consistency boundary\n"
+            "  • <<Entity>>         — has identity + a lifecycle\n"
+            "  • <<Value Object>>   — immutable descriptor, no identity (incl. enums)\n"
+            "  • <<Service>>        — domain logic spanning entities\n"
+            "  • <<Repository>>     — the persistence SEAM (interface), if it is a "
+            "genuine domain concept\n"
+            "EXCLUDE infrastructure & plumbing ENTIRELY: persistence/ORM "
+            "implementations and DB-row mappings, DTOs / request-response / "
+            "serialization shapes, config & settings objects, clients, adapters, "
+            "factories, job/worker runners, controllers, generic result/response "
+            "wrappers, and utilities. If a type exists only to talk to a database, a "
+            "framework, or the wire, it is NOT domain — leave it out. Aim for the "
+            "~8-14 concepts that actually carry the domain.\n\n"
+            "Output a Mermaid `classDiagram`. Put the stereotype as the FIRST line "
+            "inside each class body, e.g. `class Proposal {\\n  <<Aggregate Root>>\\n"
+            "  +id\\n}`. Show the relationships that matter: aggregate composition "
+            "`Root *-- Member : owns`, references between aggregates `A --> B : "
+            "refs`, service dependencies `Service ..> Repository : reads`. Every "
+            "concept connects to at least one other. Ground strictly in the code "
+            "below.\n\n"
+            'Reply JSON: {"mermaid": "classDiagram\\n  ...", "entities": '
+            '[{"name","kind","description"}]} where `kind` is the stereotype '
+            "(Aggregate Root / Entity / Value Object / Service / Repository)."
+            "\n\nSOURCE:\n" + blob)
         try:
             d = _llm_obj(prompt, model=model, max_tokens=4096)
             mermaid = _prune_orphans(_clean_mermaid(d.get("mermaid", "")))
