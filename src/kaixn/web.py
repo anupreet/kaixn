@@ -259,6 +259,15 @@ def get_playbook(repo: str) -> dict:
     return pb
 
 
+@app.delete("/api/playbook")
+def delete_playbook(repo: str) -> dict:
+    """Remove a repo's playbook (and its documents, via cascade) from the index."""
+    removed = playbook_store().delete_playbook(playbook.normalize_repo_url(repo))
+    if not removed:
+        raise HTTPException(status_code=404, detail="repo not indexed")
+    return {"ok": True, "repo": repo}
+
+
 @app.get("/api/doc")
 def get_doc(repo: str, kind: str, slug: str) -> dict:
     """One generated document (full markdown). 404 if it hasn't been generated

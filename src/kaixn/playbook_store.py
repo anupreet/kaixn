@@ -91,6 +91,12 @@ class InMemoryPlaybookStore:
                 for (r, _, _), d in self._docs.items() if r == repo]
         return {**pb, "docs": docs}
 
+    def delete_playbook(self, repo: str) -> bool:
+        existed = self._pb.pop(repo, None) is not None
+        for key in [k for k in self._docs if k[0] == repo]:
+            del self._docs[key]
+        return existed
+
     def list_repos(self) -> list[dict]:
         out = []
         for repo, pb in self._pb.items():
@@ -176,6 +182,11 @@ class PgPlaybookStore:
             "docs": [{"kind": d[0], "slug": d[1], "title": d[2],
                       "summary": d[3], "principles": d[4]} for d in docs],
         }
+
+    def delete_playbook(self, repo: str) -> bool:
+        # playbook_doc rows cascade via the FK ON DELETE CASCADE.
+        cur = self._conn.execute("DELETE FROM playbook WHERE repo = %s", (repo,))
+        return cur.rowcount > 0
 
     def list_repos(self) -> list[dict]:
         rows = self._conn.execute(

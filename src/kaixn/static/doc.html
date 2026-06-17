@@ -60,8 +60,10 @@ marked.setOptions({ gfm:true });
 mermaid.initialize({ startOnLoad:false, theme:'dark', securityLevel:'loose' });
 
 $('kind').textContent = kind === 'spec' ? 'Tech Spec' : 'PRD';
-$('repo').textContent = repo.replace(/^https?:\/\/github\.com\//,'');
+const repoShort = repo.replace(/^https?:\/\/github\.com\//,'');
+$('repo').textContent = repoShort;
 $('back').href = '/?repo=' + encodeURIComponent(repo);
+$('back').textContent = '← ' + (repoShort || 'playbook');
 
 let tries = 0;
 async function load() {
