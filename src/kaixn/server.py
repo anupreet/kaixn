@@ -6,6 +6,9 @@ Tools (called by the PRD tool and Claude Code):
   synthesize_proposal     intent → typed operations → structural check
   get_agent_contract      the grounded contract for a synthesized Proposal
   review_implementation   PR event → drift check vs the approved Proposal
+  list_indexed_repos      repos with a generated playbook
+  get_playbook            a repo's domain + engineering principles + PRD/spec index
+  get_doc                 one PRD or Tech Spec's full markdown (build grounding)
 
 The tool *logic* lives in `engine`/`store`/`gate`; this module is the thin MCP
 wrapper plus an in-process AppState so the loop is demoable without a DB.
@@ -195,6 +198,50 @@ def tool_review_implementation(proposal_id: str, files: list[str] | None = None,
             "comments": [{"kind": c.kind, "body": c.body} for c in report.comments]}
 
 
+# --- playbook reads (the PRDs / Tech Specs / principles a builder grounds in) ---
+# Backed by the public HTTP API (KAIXN_API_URL, default https://app.kaixn.com) so a
+# remote build agent can pull them without database access — the in-process STATE
+# above holds only this process's constitution.
+def _api_get(path: str, params: dict | None = None):
+    import httpx
+
+    base = os.getenv("KAIXN_API_URL", "https://app.kaixn.com").rstrip("/")
+    r = httpx.get(base + path, params=params or {}, timeout=30.0)
+    r.raise_for_status()
+    return r.json()
+
+
+def tool_list_indexed_repos() -> list[dict]:
+    """List the repos kaixn has a playbook for (PRDs, Tech Specs, domain model, and
+    engineering principles are available for each). Start here to find a repo."""
+    try:
+        return _api_get("/api/repos").get("repos", [])
+    except Exception as e:  # noqa: BLE001
+        return [{"error": str(e)[:200]}]
+
+
+def tool_get_playbook(repo_url: str) -> dict:
+    """A repo's playbook overview: its domain entities, the mined ENGINEERING
+    PRINCIPLES it follows, and the index of PRDs + Tech Specs (titles, slugs,
+    groups). Call this first when building for a repo — it tells you which PRD and
+    which Tech Specs to read next (via get_doc) and what principles to honor."""
+    try:
+        return _api_get("/api/playbook", {"repo": repo_url})
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)[:200]}
+
+
+def tool_get_doc(repo_url: str, kind: str, slug: str) -> dict:
+    """One full document's markdown. kind='prd' for a customer-facing PRD, 'spec'
+    for a Tech Spec (with its runtime sequence diagram). `slug` comes from the
+    playbook index. Read the PRD you're implementing plus its related Tech Specs
+    before writing code."""
+    try:
+        return _api_get("/api/doc", {"repo": repo_url, "kind": kind, "slug": slug})
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)[:200]}
+
+
 def build_server():
     """Construct the FastMCP server with the tool surface."""
     from mcp.server.fastmcp import FastMCP
@@ -208,6 +255,9 @@ def build_server():
     mcp.tool()(tool_connect_repo)
     mcp.tool()(tool_promote_norm)
     mcp.tool()(tool_review_implementation)
+    mcp.tool()(tool_list_indexed_repos)
+    mcp.tool()(tool_get_playbook)
+    mcp.tool()(tool_get_doc)
     return mcp
 
 
