@@ -144,6 +144,20 @@
   .split .doc-row .s, .split .doc-row .reliesline, .split .doc-row .arrow { display:none; }
   .split .doc-row.active { border-color:var(--clay); background:#1c232e; }
   .split .doc-row.active .t { color:var(--clay); }
+
+  /* nested tree: overview (pinned) → group header → indented children */
+  .doc-row.ovrow { border-color:#3a3326; background:#17150f; }
+  .doc-row.ovrow .t::before { content:"◆ "; color:var(--clay); }
+  .doc-row.child { margin-left:18px; }
+  .split .doc-row.child { margin-left:12px; }
+  .grp-head { display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none;
+              padding:12px 6px 6px; color:var(--muted); font-size:11px;
+              text-transform:uppercase; letter-spacing:.07em; }
+  .grp-head:hover { color:var(--fg); }
+  .grp-head .caret { font-size:9px; transition:transform .15s; }
+  .grp-head.collapsed .caret { transform:rotate(-90deg); }
+  .grp-head .gname { font-weight:700; }
+  .grp-head .gcount { color:var(--muted); font-weight:400; }
   @media (max-width:820px){
     .split { flex-direction:column; }
     .split .dlist { position:static; flex-basis:auto; width:100%; max-height:none; }
@@ -455,21 +469,46 @@ function renderDocsPane(items, kind) {
   </div>`;
 }
 
+function docRow(x, kind, child) {
+  const title = x.title || x.name || x.area || 'untitled';
+  const ready = S.ready.has(kind + ':' + x.slug);
+  const st = ready ? `<span class="st ready">✓ ready</span>` : `<span class="st gen">⏳ generating…</span>`;
+  const active = (S.open && S.open.kind===kind && S.open.slug===x.slug) ? ' active' : '';
+  const ov = x.slug === 'overview' ? ' ovrow' : '';
+  return `<a class="doc-row${active}${child?' child':''}${ov}" href="${docUrl(S.repo, kind, x.slug)}"
+      onclick="if(event.metaKey||event.ctrlKey||event.shiftKey)return true; openDoc('${kind}','${esc(x.slug)}'); return false;">
+    <div class="body">
+      <div class="t">${esc(title)}</div>
+      ${x.summary ? `<div class="s">${esc(x.summary)}</div>`:''}
+      ${principleLinks(x.principles)}
+    </div>${st}<span class="arrow">→</span></a>`;
+}
+
+// nested tree: Overview (pinned) → ungrouped items → collapsible group → items
 function renderDocs(items, kind) {
   if (!items.length) return `<div class="empty">${S.llm===null?'generating…':'none surfaced.'}</div>`;
-  return items.map(x => {
-    const title = x.title || x.name || x.area || 'untitled';
-    const ready = S.ready.has(kind + ':' + x.slug);
-    const st = ready ? `<span class="st ready">✓ ready</span>` : `<span class="st gen">⏳ generating…</span>`;
-    const active = (S.open && S.open.kind===kind && S.open.slug===x.slug) ? ' active' : '';
-    return `<a class="doc-row${active}" href="${docUrl(S.repo, kind, x.slug)}"
-        onclick="if(event.metaKey||event.ctrlKey||event.shiftKey)return true; openDoc('${kind}','${esc(x.slug)}'); return false;">
-      <div class="body">
-        <div class="t">${esc(title)}</div>
-        ${x.summary ? `<div class="s">${esc(x.summary)}</div>`:''}
-        ${principleLinks(x.principles)}
-      </div>${st}<span class="arrow">→</span></a>`;
-  }).join('');
+  const ov = items.find(x => x.slug === 'overview');
+  const rest = items.filter(x => x.slug !== 'overview');
+  let html = ov ? docRow(ov, kind) : '';
+  html += rest.filter(x => !(x.grp || '').trim()).map(x => docRow(x, kind)).join('');
+  const order = [], by = {};
+  rest.forEach(x => { const g = (x.grp || '').trim();
+    if (g) { if (!by[g]) { by[g] = []; order.push(g); } by[g].push(x); } });
+  order.forEach(g => {
+    const collapsed = COLLAPSED.has(kind + ':' + g);
+    html += `<div class="grp-head${collapsed?' collapsed':''}" data-k="${kind}" data-g="${esc(g)}" onclick="toggleGroupEl(this)">
+      <span class="caret">▾</span><span class="gname">${esc(g)}</span><span class="gcount">${by[g].length}</span></div>`;
+    if (!collapsed) html += by[g].map(x => docRow(x, kind, true)).join('');
+  });
+  return html;
+}
+const COLLAPSED = new Set();   // collapsed group keys "kind:group" (session-scoped)
+function toggleGroupEl(el) {
+  const key = el.dataset.k + ':' + el.dataset.g;
+  COLLAPSED.has(key) ? COLLAPSED.delete(key) : COLLAPSED.add(key);
+  const pane = el.dataset.k === 'prd' ? 'feat' : 'tech';
+  const list = document.querySelector('#' + pane + ' .dlist') || $(pane);
+  if (list) list.innerHTML = renderDocs(el.dataset.k === 'prd' ? S.features : S.tech_specs, el.dataset.k);
 }
 
 // ---------- Split view — open a PRD/spec in the ¾ detail pane; the ¼ list stays for browsing ----------
