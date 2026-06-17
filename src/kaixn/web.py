@@ -264,6 +264,7 @@ def playbook_stream(body: PlaybookBody) -> StreamingResponse:
 # -- GitHub auth (gate before chat; flag-gated on the OAuth credentials) ------
 _SESSION_COOKIE = "kaixn_session"
 _STATE_COOKIE = "kaixn_oauth_state"
+_RETURN_COOKIE = "kaixn_return"
 
 
 def _public_base(request: Request) -> str:
@@ -285,6 +286,11 @@ def _redirect_uri(request: Request) -> str:
     return _public_base(request) + "/api/auth/github/callback"
 
 
+def _safe_path(p: str) -> str:
+    """Only allow a same-origin path return target (no open-redirect)."""
+    return p if p.startswith("/") and not p.startswith("//") else "/"
+
+
 @app.get("/api/auth/me")
 def auth_me(request: Request) -> dict:
     """Who's signed in. When auth is disabled (no OAuth creds), reports the app as
@@ -299,13 +305,15 @@ def auth_me(request: Request) -> dict:
 
 
 @app.get("/api/auth/github/login")
-def auth_login(request: Request) -> RedirectResponse:
+def auth_login(request: Request, return_to: str = "/") -> RedirectResponse:
     if not auth.auth_enabled():
         raise HTTPException(status_code=503, detail="GitHub auth is not configured")
     state = auth.new_state()
     resp = RedirectResponse(auth.authorize_url(_redirect_uri(request), state), status_code=302)
-    resp.set_cookie(_STATE_COOKIE, state, max_age=600, httponly=True,
-                    secure=_secure(request), samesite="lax", path="/")
+    sec = _secure(request)
+    resp.set_cookie(_STATE_COOKIE, state, max_age=600, httponly=True, secure=sec, samesite="lax", path="/")
+    resp.set_cookie(_RETURN_COOKIE, _safe_path(return_to), max_age=600, httponly=True,
+                    secure=sec, samesite="lax", path="/")
     return resp
 
 
@@ -313,17 +321,20 @@ def auth_login(request: Request) -> RedirectResponse:
 def auth_callback(request: Request, code: str = "", state: str = "") -> RedirectResponse:
     if not auth.auth_enabled():
         raise HTTPException(status_code=503, detail="GitHub auth is not configured")
-    home = _public_base(request) + "/"
+    base = _public_base(request)
+    ret = _safe_path(request.cookies.get(_RETURN_COOKIE, "/"))
     if not code or not state or state != request.cookies.get(_STATE_COOKIE):
-        return RedirectResponse(home + "?auth=failed", status_code=302)
+        return RedirectResponse(base + "/?auth=failed", status_code=302)
     try:
         user = auth.exchange_code(code, _redirect_uri(request))
     except Exception:  # noqa: BLE001
-        return RedirectResponse(home + "?auth=failed", status_code=302)
-    resp = RedirectResponse(home + "?auth=ok", status_code=302)
+        return RedirectResponse(base + "/?auth=failed", status_code=302)
+    ret += ("&" if "?" in ret else "?") + "auth=ok"        # signal the SPA to reopen chat
+    resp = RedirectResponse(base + ret, status_code=302)
     resp.set_cookie(_SESSION_COOKIE, auth.make_session(user), max_age=7 * 86400,
                     httponly=True, secure=_secure(request), samesite="lax", path="/")
     resp.delete_cookie(_STATE_COOKIE, path="/")
+    resp.delete_cookie(_RETURN_COOKIE, path="/")
     return resp
 
 

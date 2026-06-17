@@ -193,7 +193,11 @@
   .chat-head { display:flex; align-items:center; gap:10px; padding:11px 14px; border-bottom:1px solid var(--line); }
   .chat-head .ttl { font-family:"Fraunces",Georgia,serif; font-weight:600; display:flex; align-items:center; gap:8px; }
   .chat-head .ttl img { width:20px; height:20px; filter:invert(1) sepia(1) saturate(3) hue-rotate(330deg) brightness(.95); }
-  .chat-head select { margin-left:auto; background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:7px; padding:4px 6px; font-size:12px; }
+  .chat-head .chat-user { margin-left:auto; color:var(--muted); font-size:12px; font-family:ui-monospace,monospace; }
+  .chat-head select { background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:7px; padding:4px 6px; font-size:12px; }
+  .gh-btn { display:inline-flex; align-items:center; gap:8px; margin-top:14px; padding:10px 16px;
+    border-radius:8px; background:#24292f; color:#fff; text-decoration:none; font-weight:600; border:1px solid #444c56; }
+  .gh-btn:hover { background:#2d333b; }
   .chat-head .x { cursor:pointer; color:var(--muted); border:1px solid var(--line); border-radius:7px; padding:3px 9px; }
   .chat-head .x:hover { color:var(--accent); border-color:var(--accent); }
   .chat-msgs { flex:1; overflow:auto; padding:14px; display:flex; flex-direction:column; gap:11px; }
@@ -230,6 +234,7 @@
 <aside class="chat-panel" id="chatPanel" aria-hidden="true">
   <div class="chat-head">
     <span class="ttl"><img src="/static/enso.svg" alt="">copilot</span>
+    <span class="chat-user" id="chatUser"></span>
     <select id="chatPersona" title="Who you are">
       <option value="generalist_pm">Product Manager</option>
       <option value="growth_pm">Growth PM</option>
@@ -238,7 +243,7 @@
     <span class="x" onclick="closeChat()" title="Close">✕</span>
   </div>
   <div class="chat-msgs" id="chatMsgs"></div>
-  <div class="chat-compose">
+  <div class="chat-compose" id="chatCompose">
     <textarea id="chatInput" placeholder="Describe a feature you're considering…" onkeydown="chatKey(event)"></textarea>
     <button onclick="sendChat()">Send</button>
   </div>
@@ -668,15 +673,33 @@ function chatLauncher(on) {
   const b = $('chatLaunch'); if (!b) return;
   b.classList.toggle('show', !!on && !$('chatPanel').classList.contains('open'));
 }
-function openChat() {
+async function openChat() {
   if (!S || !S.repo) return;
-  if (CHAT.repo !== S.repo) {                 // new repo → fresh session + transcript
-    CHAT = { sid: null, repo: S.repo, busy: false };
+  if (CHAT.repo !== S.repo) { CHAT = { sid: null, repo: S.repo, busy: false }; $('chatMsgs').innerHTML = ''; }
+  $('chatPanel').classList.add('open'); $('chatLaunch').classList.remove('show');
+  await chatGate();
+}
+// Decide sign-in vs composer based on /api/auth/me; when auth is off, open as normal.
+async function chatGate() {
+  let me = { enabled: false, authed: true };
+  try { me = await (await fetch('/api/auth/me')).json(); } catch (e) {}
+  const compose = $('chatCompose');
+  if (me.enabled && !me.authed) {
+    $('chatUser').textContent = '';
+    compose.style.display = 'none';
+    const ret = encodeURIComponent(location.pathname + location.search);
+    $('chatMsgs').innerHTML = `<div class="chat-empty">Sign in with GitHub to discuss features for
+      <b>${esc(shortRepo(S.repo))}</b>.<br>
+      <a class="gh-btn" href="/api/auth/github/login?return_to=${ret}">Sign in with GitHub</a></div>`;
+    return;
+  }
+  compose.style.display = '';
+  $('chatUser').textContent = me.login ? '@' + me.login : '';
+  if (!$('chatMsgs').children.length || $('chatMsgs').querySelector('.gh-btn')) {
     $('chatMsgs').innerHTML = `<div class="chat-empty">Describe a feature you're weighing for
       <b>${esc(shortRepo(S.repo))}</b>. I'll ground it in this repo's principles and decisions
       and flag anything it collides with — before any code is written.</div>`;
   }
-  $('chatPanel').classList.add('open'); $('chatLaunch').classList.remove('show');
   $('chatInput').focus();
 }
 function closeChat() {
@@ -740,6 +763,11 @@ async function sendChat() {
 }
 
 route();   // boot: ?repo= → view, else landing
+// returning from GitHub OAuth (?auth=ok) → reopen the chat once the repo loads
+if (new URLSearchParams(location.search).get('auth') === 'ok') {
+  const t = setInterval(() => { if (S && S.repo && $('chatLaunch')) { clearInterval(t); openChat(); } }, 200);
+  setTimeout(() => clearInterval(t), 4000);
+}
 </script>
 </body>
 </html>
