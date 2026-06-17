@@ -28,10 +28,10 @@ kaixn-server = "kaixn.server:main"
 kaixn-web = "kaixn.web:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/kaixn"]
+packages = ["src/kaixn", "agentkit"]   # agentkit: standalone agent framework lib
 artifacts = ["src/kaixn/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "."]   # "." so `import agentkit` (repo-root package) resolves in tests
 addopts = "-q"

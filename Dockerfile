@@ -15,6 +15,7 @@ WORKDIR /app
 # Install dependencies first (layer cache), then the source.
 COPY pyproject.toml README.md ./
 COPY src ./src
+COPY agentkit ./agentkit
 COPY migrations ./migrations
 COPY queries ./queries
 COPY scripts ./scripts
