@@ -37,10 +37,15 @@ CREATE TABLE IF NOT EXISTS playbook_doc (
     summary     text NOT NULL DEFAULT '',
     markdown    text NOT NULL,
     principles  jsonb NOT NULL DEFAULT '[]'::jsonb,
+    grp         text NOT NULL DEFAULT '',       -- the area this nests under ('' = top level)
+    seq         integer NOT NULL DEFAULT 0,     -- display order within the kind
     created_at  timestamptz NOT NULL DEFAULT now(),
     UNIQUE (repo, kind, slug)
 );
 
 CREATE INDEX IF NOT EXISTS playbook_doc_repo_idx ON playbook_doc (repo);
+-- additive columns for the nested view (idempotent on pre-existing tables)
+ALTER TABLE playbook_doc ADD COLUMN IF NOT EXISTS grp text NOT NULL DEFAULT '';
+ALTER TABLE playbook_doc ADD COLUMN IF NOT EXISTS seq integer NOT NULL DEFAULT 0;
 
 COMMIT;

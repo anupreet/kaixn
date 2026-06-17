@@ -91,7 +91,8 @@ class JobManager:
                                    slug=ev["slug"], title=ev["title"],
                                    summary=ev.get("summary", ""),
                                    markdown=ev["markdown"],
-                                   principles=ev.get("principles", []))
+                                   principles=ev.get("principles", []),
+                                   grp=ev.get("grp", ""), seq=ev.get("seq", 0))
                     ev = {k: v for k, v in ev.items() if k != "markdown"}
                 job._emit(ev)
             job._finish("done")

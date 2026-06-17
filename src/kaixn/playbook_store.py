@@ -42,10 +42,15 @@ CREATE TABLE IF NOT EXISTS playbook_doc (
     summary     text NOT NULL DEFAULT '',
     markdown    text NOT NULL,
     principles  jsonb NOT NULL DEFAULT '[]'::jsonb,
+    grp         text NOT NULL DEFAULT '',       -- the area this nests under ('' = top level)
+    seq         integer NOT NULL DEFAULT 0,     -- display order within the kind
     created_at  timestamptz NOT NULL DEFAULT now(),
     UNIQUE (repo, kind, slug)
 );
 CREATE INDEX IF NOT EXISTS playbook_doc_repo_idx ON playbook_doc (repo);
+-- additive columns for the nested view (idempotent on pre-existing tables)
+ALTER TABLE playbook_doc ADD COLUMN IF NOT EXISTS grp text NOT NULL DEFAULT '';
+ALTER TABLE playbook_doc ADD COLUMN IF NOT EXISTS seq integer NOT NULL DEFAULT 0;
 """
 
 
@@ -75,10 +80,12 @@ class InMemoryPlaybookStore:
             pb["principles"] = principles
 
     def save_doc(self, pid: str, *, repo: str, kind: str, slug: str, title: str,
-                 summary: str, markdown: str, principles: list) -> None:
+                 summary: str, markdown: str, principles: list,
+                 grp: str = "", seq: int = 0) -> None:
         self._docs[(repo, kind, slug)] = {
             "repo": repo, "kind": kind, "slug": slug, "title": title,
-            "summary": summary, "markdown": markdown, "principles": principles}
+            "summary": summary, "markdown": markdown, "principles": principles,
+            "grp": grp, "seq": seq}
 
     def get_doc(self, repo: str, kind: str, slug: str) -> dict | None:
         return self._docs.get((repo, kind, slug))
@@ -87,8 +94,10 @@ class InMemoryPlaybookStore:
         pb = self._pb.get(repo)
         if pb is None:
             return None
-        docs = [{k: d[k] for k in ("kind", "slug", "title", "summary", "principles")}
+        docs = [{k: d.get(k) for k in ("kind", "slug", "title", "summary",
+                                       "principles", "grp", "seq")}
                 for (r, _, _), d in self._docs.items() if r == repo]
+        docs.sort(key=lambda d: (d.get("seq") or 0))
         return {**pb, "docs": docs}
 
     def delete_playbook(self, repo: str) -> bool:
@@ -138,18 +147,20 @@ class PgPlaybookStore:
         )
 
     def save_doc(self, pid: str, *, repo: str, kind: str, slug: str, title: str,
-                 summary: str, markdown: str, principles: list) -> None:
+                 summary: str, markdown: str, principles: list,
+                 grp: str = "", seq: int = 0) -> None:
         self._conn.execute(
             """
             INSERT INTO playbook_doc
-              (playbook_id, repo, kind, slug, title, summary, markdown, principles)
-            VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s::jsonb)
+              (playbook_id, repo, kind, slug, title, summary, markdown, principles, grp, seq)
+            VALUES (%s::uuid, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s)
             ON CONFLICT (repo, kind, slug) DO UPDATE SET
               title = EXCLUDED.title, summary = EXCLUDED.summary,
-              markdown = EXCLUDED.markdown, principles = EXCLUDED.principles
+              markdown = EXCLUDED.markdown, principles = EXCLUDED.principles,
+              grp = EXCLUDED.grp, seq = EXCLUDED.seq
             """,
             (pid, repo, kind, slug, title, summary, markdown,
-             json.dumps(principles or [])),
+             json.dumps(principles or []), grp, seq),
         )
 
     def get_doc(self, repo: str, kind: str, slug: str) -> dict | None:
@@ -173,14 +184,14 @@ class PgPlaybookStore:
         if not row:
             return None
         docs = self._conn.execute(
-            "SELECT kind, slug, title, summary, principles FROM playbook_doc "
-            "WHERE repo = %s ORDER BY kind, title", (repo,),
+            "SELECT kind, slug, title, summary, principles, grp, seq FROM playbook_doc "
+            "WHERE repo = %s ORDER BY seq, kind, title", (repo,),
         ).fetchall()
         return {
             "repo": row[1], "llm": row[2], "mermaid": row[3],
             "entities": row[4], "principles": row[5],
-            "docs": [{"kind": d[0], "slug": d[1], "title": d[2],
-                      "summary": d[3], "principles": d[4]} for d in docs],
+            "docs": [{"kind": d[0], "slug": d[1], "title": d[2], "summary": d[3],
+                      "principles": d[4], "grp": d[5], "seq": d[6]} for d in docs],
         }
 
     def delete_playbook(self, repo: str) -> bool:
