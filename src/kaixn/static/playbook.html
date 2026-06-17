@@ -177,6 +177,43 @@
   .doc th { background:#161b22; }
   .doc blockquote { border-left:3px solid var(--line); margin:12px 0; padding:2px 14px; color:var(--muted); }
   .relies { margin-top:26px; padding-top:16px; border-top:1px solid var(--line); font-size:13px; color:var(--muted); }
+
+  /* PM copilot chat */
+  .chat-launch { position:fixed; bottom:22px; right:24px; z-index:60; display:none;
+    align-items:center; gap:8px; border:0; border-radius:999px; padding:12px 18px;
+    font-weight:600; cursor:pointer; color:#fff7f0;
+    background:linear-gradient(135deg,var(--clay),var(--clay-2));
+    box-shadow:0 6px 20px rgba(169,99,63,.45); }
+  .chat-launch.show { display:inline-flex; }
+  .chat-panel { position:fixed; bottom:22px; right:24px; z-index:61; width:min(440px,94vw);
+    height:min(640px,84vh); background:var(--bg); border:1px solid var(--line);
+    border-radius:14px; box-shadow:0 24px 60px rgba(0,0,0,.55); display:none;
+    flex-direction:column; overflow:hidden; }
+  .chat-panel.open { display:flex; }
+  .chat-head { display:flex; align-items:center; gap:10px; padding:11px 14px; border-bottom:1px solid var(--line); }
+  .chat-head .ttl { font-family:"Fraunces",Georgia,serif; font-weight:600; display:flex; align-items:center; gap:8px; }
+  .chat-head .ttl img { width:20px; height:20px; filter:invert(1) sepia(1) saturate(3) hue-rotate(330deg) brightness(.95); }
+  .chat-head select { margin-left:auto; background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:7px; padding:4px 6px; font-size:12px; }
+  .chat-head .x { cursor:pointer; color:var(--muted); border:1px solid var(--line); border-radius:7px; padding:3px 9px; }
+  .chat-head .x:hover { color:var(--accent); border-color:var(--accent); }
+  .chat-msgs { flex:1; overflow:auto; padding:14px; display:flex; flex-direction:column; gap:11px; }
+  .msg { max-width:90%; padding:9px 12px; border-radius:12px; font-size:14px; line-height:1.5; }
+  .msg.user { align-self:flex-end; background:#1c232e; border:1px solid var(--line); white-space:pre-wrap; }
+  .msg.bot { align-self:flex-start; background:var(--panel); border:1px solid var(--line); }
+  .msg.bot .md > :first-child { margin-top:0; } .msg.bot .md > :last-child { margin-bottom:0; }
+  .msg.bot .md p { margin:.4em 0; } .msg.bot .md ul { margin:.4em 0; padding-left:18px; }
+  .msg.bot .md code { background:#0d1117; border:1px solid var(--line); border-radius:4px; padding:0 4px; font-size:12px; }
+  .chat-step { align-self:flex-start; color:var(--muted); font-size:12px; display:flex; align-items:center; gap:8px; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:9px; }
+  .chip { font-size:11px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); color:var(--muted); }
+  .chip.conflict { border-color:#f85149; color:#f85149; }
+  .chip.tension { border-color:var(--warn); color:var(--warn); }
+  .chip.gap { border-color:var(--accent); color:var(--accent); }
+  .chip.consistent { border-color:var(--good); color:var(--good); }
+  .chat-compose { display:flex; gap:8px; padding:12px; border-top:1px solid var(--line); }
+  .chat-compose textarea { flex:1; resize:none; height:42px; max-height:120px; background:var(--panel);
+    color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:10px 11px; font:inherit; font-size:14px; }
+  .chat-empty { color:var(--muted); font-size:13px; text-align:center; margin:auto; padding:20px; line-height:1.5; }
 </style>
 </head>
 <body>
@@ -188,6 +225,24 @@
   </span>
 </header>
 <div class="wrap" id="wrap"><div id="out"></div></div>
+
+<button class="chat-launch" id="chatLaunch" onclick="openChat()">💬 Discuss a feature</button>
+<aside class="chat-panel" id="chatPanel" aria-hidden="true">
+  <div class="chat-head">
+    <span class="ttl"><img src="/static/enso.svg" alt="">copilot</span>
+    <select id="chatPersona" title="Who you are">
+      <option value="generalist_pm">Product Manager</option>
+      <option value="growth_pm">Growth PM</option>
+      <option value="platform_pm">Platform PM</option>
+    </select>
+    <span class="x" onclick="closeChat()" title="Close">✕</span>
+  </div>
+  <div class="chat-msgs" id="chatMsgs"></div>
+  <div class="chat-compose">
+    <textarea id="chatInput" placeholder="Describe a feature you're considering…" onkeydown="chatKey(event)"></textarea>
+    <button onclick="sendChat()">Send</button>
+  </div>
+</aside>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -223,6 +278,7 @@ function syncDocFromUrl(){
 async function landing() {
   S = null;
   const w = $('wrap'); if (w) w.classList.remove('wide');
+  closeChat(); chatLauncher(false);          // copilot is per-repo; hide on the landing
   $('out').innerHTML = `
     <div class="section-label">Add a repo</div>
     <div class="bar">
@@ -402,6 +458,7 @@ function renderShell() {
     : `<a onclick="go_home();return false" href="/">kaixn</a><span class="sep">/</span>
        <span class="cur">${repoShort}</span>`;
   const w = $('wrap'); if (w) w.classList.toggle('wide', !!S.open);
+  chatLauncher(true);                          // copilot available while viewing a repo
   $('out').innerHTML = `
     <div class="crumbs">
       ${crumbPath}
@@ -603,6 +660,83 @@ function card(x) {
     <div class="ev">${conv}${ev?` · ${ev}`:''}</div>
     ${ce ? `<div class="counter">counterexamples: ${ce}</div>`:''}
   </div>`;
+}
+
+// ---------- PM copilot chat (per-repo discussion, streamed from /api/chat) ----------
+let CHAT = { sid: null, repo: null, busy: false };
+function chatLauncher(on) {
+  const b = $('chatLaunch'); if (!b) return;
+  b.classList.toggle('show', !!on && !$('chatPanel').classList.contains('open'));
+}
+function openChat() {
+  if (!S || !S.repo) return;
+  if (CHAT.repo !== S.repo) {                 // new repo → fresh session + transcript
+    CHAT = { sid: null, repo: S.repo, busy: false };
+    $('chatMsgs').innerHTML = `<div class="chat-empty">Describe a feature you're weighing for
+      <b>${esc(shortRepo(S.repo))}</b>. I'll ground it in this repo's principles and decisions
+      and flag anything it collides with — before any code is written.</div>`;
+  }
+  $('chatPanel').classList.add('open'); $('chatLaunch').classList.remove('show');
+  $('chatInput').focus();
+}
+function closeChat() {
+  const p = $('chatPanel'); if (!p) return;
+  p.classList.remove('open');
+  chatLauncher(S && S.repo);
+}
+function chatKey(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } }
+function _stepLabel(t) {
+  return ({ search_norms: 'searching the constitution…', get_governing_principles: 'reading governing principles…',
+    read_playbook_doc: 'reading the playbook…', check_feature_conflicts: 'checking for collisions…',
+    get_proposal: 're-reading the proposal…' })[t] || 'thinking…';
+}
+function _chatScroll() { const m = $('chatMsgs'); if (m) m.scrollTop = m.scrollHeight; }
+function _addMsg(role, text) {
+  const d = document.createElement('div'); d.className = 'msg ' + (role === 'user' ? 'user' : 'bot');
+  if (role === 'user') d.textContent = text; else d.innerHTML = `<div class="md"></div>`;
+  $('chatMsgs').appendChild(d); _chatScroll(); return d;
+}
+function _chips(findings) {
+  const w = document.createElement('div'); w.className = 'chips';
+  w.innerHTML = findings.slice(0, 8).map(f => {
+    const v = (f.verdict || '').toLowerCase();
+    return `<span class="chip ${v}" title="${esc(f.norm || '')}">${esc(v)}: ${esc((f.norm || '').slice(0, 44))}</span>`;
+  }).join('');
+  return w;
+}
+async function sendChat() {
+  if (CHAT.busy || !S || !S.repo) return;
+  const inp = $('chatInput'), text = (inp.value || '').trim(); if (!text) return;
+  const empty = $('chatMsgs').querySelector('.chat-empty'); if (empty) empty.remove();
+  inp.value = ''; CHAT.busy = true; CHAT.repo = S.repo;
+  _addMsg('user', text);
+  const bot = _addMsg('bot', ''), md = bot.querySelector('.md');
+  const step = document.createElement('div'); step.className = 'chat-step'; $('chatMsgs').appendChild(step);
+  let answer = '';
+  try {
+    const r = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo_url: S.repo, message: text, session_id: CHAT.sid, persona: $('chatPersona').value }) });
+    if (!r.ok || !r.body) throw new Error('HTTP ' + r.status);
+    const rd = r.body.getReader(), dec = new TextDecoder(); let buf = '';
+    for (;;) {
+      const { value, done } = await rd.read(); if (done) break;
+      buf += dec.decode(value, { stream: true }); let i;
+      while ((i = buf.indexOf('\n\n')) >= 0) {
+        const frame = buf.slice(0, i); buf = buf.slice(i + 2);
+        const dl = frame.split('\n').find(l => l.startsWith('data:')); if (!dl) continue;
+        const ev = JSON.parse(dl.slice(5).trim());
+        if (ev.type === 'token') { answer += ev.text; md.innerHTML = marked.parse(answer); _chatScroll(); }
+        else if (ev.type === 'step') { step.innerHTML = ev.status === 'running' ? `<span class="dot"></span><span>${_stepLabel(ev.tool)}</span>` : ''; }
+        else if (ev.type === 'done') {
+          CHAT.sid = ev.session_id || CHAT.sid; step.remove();
+          md.innerHTML = marked.parse(ev.text || answer || '…');
+          if (ev.conflict_findings && ev.conflict_findings.length) bot.appendChild(_chips(ev.conflict_findings));
+          _chatScroll();
+        } else if (ev.type === 'error') { step.remove(); md.innerHTML = `<span style="color:#f85149">${esc(ev.detail || 'error')}</span>`; }
+      }
+    }
+  } catch (e) { step.remove(); md.innerHTML = `<span style="color:#f85149">${esc(e.message || e)}</span>`; }
+  finally { CHAT.busy = false; }
 }
 
 route();   // boot: ?repo= → view, else landing
