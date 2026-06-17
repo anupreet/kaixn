@@ -332,11 +332,15 @@ def build_index(root: pathlib.Path, *, llm: bool, principles: list[dict],
             "architecture, stack/storage, core engine/algorithms, interfaces/seams, "
             "data flow, concurrency, extension points, integration).\n"
             "Every item must be grounded in the code/docs below. Tag each with "
-            "`principles`: axis ids from the menu it relies on (0-3, only from the menu).\n\n"
+            "`principles`: axis ids from the menu it relies on (0-3, only from the menu). "
+            "ALSO give each item a `group`: the higher-level AREA it nests under — "
+            "organize all items into ~3-6 areas and reuse the SAME area string for "
+            "siblings (e.g. 'Meeting Intelligence', 'Storage & Retrieval'). List items "
+            "so grouped siblings are adjacent.\n\n"
             "PRINCIPLE MENU (axis: value):\n" + _axis_menu(principles) +
-            '\n\nReply JSON object: {"features":[{"name","summary","evidence",'
+            '\n\nReply JSON object: {"features":[{"name","summary","evidence","group",'
             '"principles":[]}], "tech_specs":[{"area","decision","rationale",'
-            '"evidence","principles":[]}]}.\n\nREPO:\n' + ctx)
+            '"evidence","group","principles":[]}]}.\n\nREPO:\n' + ctx)
         try:
             # 8192: a balanced object (~13 features + ~13 specs, each with prose)
             # overflows 4096 and truncates. _llm_obj now strips fences + repairs
@@ -496,6 +500,56 @@ def build_doc(root: pathlib.Path, *, kind: str, title: str, summary: str = "",
     return (f"# {title}\n\n" + (f"> {summary}\n\n" if summary else "") +
             "\n\n".join(f"## {s}\n\n_Offline mode — connect an API key to "
                         "generate this section._" for s in sections))
+
+
+# --- overview (the root of the nested PRD / Tech-Spec tree) ----------------
+# title, H2 sections, and a guiding instruction per kind. The overview is the
+# big picture; the nested docs hold the detail. It carries a Mermaid flowchart
+# that wires the AREAS together ("how it fits together").
+_OVERVIEW: dict[str, tuple[str, list[str], str]] = {
+    "prd": ("Product Overview",
+            ["What This Product Is", "Who It's For", "The Capabilities",
+             "How It Fits Together"],
+            "Write a high-level PRODUCT OVERVIEW — the big picture a PM or customer "
+            "needs before drilling into individual features. Plain language about "
+            "value and experience; NO implementation detail."),
+    "spec": ("Architecture Overview",
+             ["System Overview", "Key Components", "How It Fits Together",
+              "Cross-Cutting Concerns"],
+             "Write a high-level ARCHITECTURE OVERVIEW — the big picture an engineer "
+             "needs before drilling into individual specs: the major components and "
+             "how control/data flows between them. Ground every claim in the code."),
+}
+
+
+def build_overview(root: pathlib.Path, *, kind: str, areas: list[dict],
+                   llm: bool, model: str = "claude-sonnet-4-6") -> str:
+    """Generate the root OVERVIEW doc for a kind. ``areas`` is ``[{group, items}]``
+    — the nested docs this overview maps. The 'How It Fits Together' section
+    carries a Mermaid flowchart wiring the areas together."""
+    title, sections, guide = _OVERVIEW[kind]
+    areas_txt = "\n".join(f"  • {a['group']}: " + ", ".join(a["items"])
+                          for a in areas if a.get("group"))
+    if llm and (kind == "prd" or _source_coverage(root) > 0):
+        ctx = (_read_docs(root) + "\n\n" + _ui_blob(root) if kind == "prd"
+               else _source_blob(root, max_files=22, per_file=4000))
+        prompt = (
+            guide + " of THIS repository.\n\n" + _DENSITY_RULES +
+            "• 'How It Fits Together' MUST contain exactly ONE Mermaid `flowchart` "
+            "in a ```mermaid block (first line `flowchart TD`) that wires the AREAS "
+            "below into how the system/journey flows. Use commas, not semicolons.\n\n"
+            "AREAS (the nested docs this overview maps — reference them, don't "
+            "restate them):\n" + (areas_txt or "(none surfaced)") +
+            "\n\nStart with a single H1 title line, then EXACTLY these H2 sections, "
+            "in order:\n" + "\n".join(f"## {s}" for s in sections) +
+            "\n\nREPO CONTEXT:\n" + ctx)
+        try:
+            return _sanitize_doc_mermaid(_llm_text(prompt, model=model, max_tokens=3072))
+        except Exception as e:                       # noqa: BLE001
+            log.warning("build_overview(%s) failed (%s); skeleton", kind, e)
+    body = "\n".join(f"- **{a['group']}** — {', '.join(a['items'])}"
+                     for a in areas if a.get("group"))
+    return f"# {title}\n\n" + (body or "_Offline mode — connect an API key._")
 
 
 # --- domain model (DDD graph) ----------------------------------------------
@@ -968,8 +1022,16 @@ def build_stream(root: str | pathlib.Path, *, llm: bool | None = None,
     if use_llm and not llm_index:        # LLM requested but the index fell back
         yield {"event": "status", "step": "⚠ feature/spec extraction degraded to "
                "the offline floor (LLM index failed) — names may be approximate."}
-    items = _with_slugs("prd", [{"title": f.get("name", ""), **f} for f in features]) \
-        + _with_slugs("spec", [{"title": s.get("area", ""), **s} for s in specs])
+    feat_items = _nest("prd", _with_slugs("prd", [{"title": f.get("name", ""), **f} for f in features]))
+    spec_items = _nest("spec", _with_slugs("spec", [{"title": s.get("area", ""), **s} for s in specs]))
+    # an Overview doc roots each kind's tree (seq 0, pinned at the top of the nav)
+    ov_prd = {"kind": "prd", "slug": "overview", "title": "Product Overview",
+              "summary": "the whole product at a glance", "grp": "", "seq": 0,
+              "overview": True, "areas": _areas(feat_items), "principles": []}
+    ov_spec = {"kind": "spec", "slug": "overview", "title": "Architecture Overview",
+               "summary": "the whole system at a glance", "grp": "", "seq": 0,
+               "overview": True, "areas": _areas(spec_items), "principles": []}
+    items = [ov_prd, *feat_items, ov_spec, *spec_items]
     yield {"event": "features", "items": [i for i in items if i["kind"] == "prd"]}
     yield {"event": "tech_specs", "items": [i for i in items if i["kind"] == "spec"]}
 
@@ -978,11 +1040,16 @@ def build_stream(root: str | pathlib.Path, *, llm: bool | None = None,
     yield {"event": "status", "step": f"generating {len(items)} full documents…"}
 
     def _one(item: dict) -> dict:
-        md = build_doc(root, kind=item["kind"], title=item["title"],
-                       summary=item.get("summary", ""), llm=use_llm, model=model)
+        if item.get("overview"):
+            md = build_overview(root, kind=item["kind"], areas=item.get("areas", []),
+                                 llm=use_llm, model=model)
+        else:
+            md = build_doc(root, kind=item["kind"], title=item["title"],
+                           summary=item.get("summary", ""), llm=use_llm, model=model)
         return {"event": "doc", "kind": item["kind"], "slug": item["slug"],
                 "title": item["title"], "summary": item.get("summary", ""),
-                "principles": item.get("principles", []), "markdown": md}
+                "principles": item.get("principles", []),
+                "grp": item.get("grp", ""), "seq": item.get("seq", 0), "markdown": md}
 
     with ThreadPoolExecutor(max_workers=_DOC_WORKERS) as pool:
         futures = {pool.submit(_one, it): it for it in items}
@@ -1019,6 +1086,30 @@ def _with_slugs(kind: str, items: list[dict]) -> list[dict]:
         slug = base if n == 0 else f"{base}-{n + 1}"
         out.append({**it, "kind": kind, "slug": slug})
     return out
+
+
+def _nest(kind: str, items: list[dict]) -> list[dict]:
+    """Attach ``grp`` (the area an item nests under) and ``seq`` (display order).
+    seq starts at 1 — the Overview doc takes seq 0 at the top of the tree."""
+    for i, it in enumerate(items):
+        it["grp"] = (it.get("group") or "").strip()
+        it["seq"] = i + 1
+    return items
+
+
+def _areas(items: list[dict]) -> list[dict]:
+    """Group items into ``[{group, items:[title, ...]}]`` preserving first-seen
+    order — the map the Overview doc references."""
+    order: list[str] = []
+    by: dict[str, list[str]] = {}
+    for it in items:
+        g = it.get("grp") or ""
+        if not g:
+            continue
+        if g not in by:
+            by[g] = []; order.append(g)
+        by[g].append(it.get("title", ""))
+    return [{"group": g, "items": by[g]} for g in order]
 
 
 def build_stream_from_url(repo_url: str, *, llm: bool | None = None,
