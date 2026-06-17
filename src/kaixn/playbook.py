@@ -27,6 +27,7 @@ log = logging.getLogger(__name__)
 
 from kaixn.app import normalize_repo_url
 from kaixn.miner import (
+    _SKIP_DIRS,
     Observation,
     _is_test,
     _py_files,
@@ -360,41 +361,77 @@ def build_index(root: pathlib.Path, *, llm: bool, principles: list[dict],
 
 
 # --- full templated documents (PRD / Tech Spec) ----------------------------
-# Classic templates — the human-facing structure each generated doc follows, and
-# the structure an agent can rely on when reading the knowledge back.
-#   Tightened for information density: the goal is the LEAST a PM/EM must read to
-#   understand the proposal. The spec carries a required Mermaid `sequenceDiagram`
-#   (the runtime flow) so the shape of the proposal is grasped in one glance, and
-#   the three overlapping scope/design/data/API sections are merged so nothing is
-#   restated three times (the ~1,800-word-wall problem).
+# Two DISTINCT audiences, not two specs:
+#   • PRD  — customer-facing: who it's for, what they can do, the experience
+#            (a user-journey diagram + a low-fi wireframe). No implementation.
+#   • Spec — engineer-facing and SELF-CONTAINED: leads with a plain-language
+#            description of what the component is and why (so the reader never has
+#            to open the PRD), then the technical design + a runtime sequence
+#            diagram. No forced "Non-Goals" filler.
 DOC_TEMPLATES: dict[str, list[str]] = {
-    "prd": ["Overview", "Problem & Context", "Goals & Non-Goals",
-            "Key User Flows", "Functional Requirements", "Success Metrics & Risks"],
-    "spec": ["Context", "Runtime Flow", "Data & Interfaces",
+    "prd": ["What You Can Do", "Who It's For", "User Stories",
+            "The Experience", "Wireframe", "What Success Feels Like"],
+    "spec": ["Overview", "Runtime Flow", "Data & Interfaces",
              "Key Decisions & Trade-offs", "Risks & Open Questions"],
 }
-_DOC_KIND_NAME = {"prd": "Product Requirements Document (PRD)",
-                  "spec": "Technical Specification"}
-
-# Density rules shared by every generated doc — read by a busy PM/EM.
+# Shared writing rules. No "Non-Goals"/"Out of Scope" — it read as forced filler.
 _DENSITY_RULES = (
-    "DENSITY RULES (maximize signal per word):\n"
-    "• Be terse — aim for UNDER 800 words total. Prefer tables and tight bullets "
-    "to paragraphs.\n"
-    "• Never restate the same fact in two sections. Do not document private "
-    "helpers or restate the section title.\n"
-    "• Fold goals and non-goals into one 2-column in-scope / out-of-scope table.\n")
+    "WRITING RULES:\n"
+    "• Prefer tables and tight bullets to paragraphs; never restate the same point "
+    "across sections or restate the section title.\n"
+    "• Do NOT add a 'Non-Goals' or 'Out of Scope' section anywhere — it is forced "
+    "filler here.\n")
 
-# The spec's signature element: one grounded sequence diagram so the flow of the
-# proposal is legible at a glance (the explicit ask).
-_SPEC_FLOW_RULE = (
-    "• The 'Runtime Flow' section MUST contain exactly ONE Mermaid sequence "
-    "diagram inside a ```mermaid fenced block whose first line is "
-    "`sequenceDiagram`. Participants are REAL modules/classes/functions from the "
-    "source below; arrows are REAL calls labelled with the real function name; "
-    "include the `alt`/`opt` branches that exist in the code. At most two "
-    "sentences of prose around it. In diagram text use commas, NOT semicolons "
+# PRD — customer-facing. The whole point is to NOT read like the tech spec.
+_PRD_RULES = (
+    "AUDIENCE — write for a CUSTOMER / PM in plain language about VALUE and "
+    "EXPERIENCE. Describe what users can DO and what they SEE — NEVER how it's "
+    "built: no modules, data models, schemas, function names, endpoints, or code "
+    "(those live in the Tech Spec). Keep it crisp.\n"
+    "• 'User Stories' — 3-6 bullets, each `As a <role>, I want <capability>, so "
+    "that <outcome>`, with 1-2 user-facing acceptance criteria.\n"
+    "• 'The Experience' — the journey the user takes. Include exactly ONE Mermaid "
+    "`journey` diagram in a ```mermaid block: a `title`, `section`s, and steps "
+    "`Step name: <1-5 score>: Actor`.\n"
+    "• 'Wireframe' — a LOW-FIDELITY sketch of the primary screen in a plain ``` "
+    "code block (box-drawing/ASCII). If the product has NO GUI, sketch the real "
+    "interaction instead: a CLI session, an API request→response, or device "
+    "behaviour.\n")
+
+# Spec — engineer-facing, self-contained, with the runtime sequence diagram.
+_SPEC_RULES = (
+    "AUDIENCE — write for an ENGINEER, and make the spec SELF-CONTAINED: the "
+    "'Overview' must describe, in plain language, WHAT this component is, the "
+    "problem it solves, and where it sits in the system — enough that the reader "
+    "never needs the PRD — then the rest goes deep on the design. Be complete, not "
+    "padded.\n"
+    "• The 'Runtime Flow' section MUST contain exactly ONE Mermaid sequence diagram "
+    "inside a ```mermaid fenced block whose first line is `sequenceDiagram`. "
+    "Participants are REAL modules/classes/functions from the source below; arrows "
+    "are REAL calls labelled with the real function name; include the `alt`/`opt` "
+    "branches that exist in the code. In diagram text use commas, NOT semicolons "
     "(a `;` breaks Mermaid rendering).\n")
+
+
+# UI surfaces fed to the PRD so the wireframe is grounded in the real screens
+# (HTML/JSX/templates aren't all in _SOURCE_EXTS, so glob them directly).
+_UI_EXTS = {".html", ".htm", ".jsx", ".tsx", ".vue", ".svelte", ".astro"}
+
+
+def _ui_blob(root: pathlib.Path, *, max_files: int = 6, per_file: int = 2500) -> str:
+    """A bounded view of the UI/template files — context for the PRD wireframe."""
+    files = [p for p in root.rglob("*")
+             if p.suffix.lower() in _UI_EXTS and p.is_file()
+             and not any(d in p.parts for d in _SKIP_DIRS) and not _is_test(p)]
+    files.sort(key=lambda p: p.stat().st_size, reverse=True)
+    out: list[str] = []
+    for p in files[:max_files]:
+        try:
+            out.append(f"# {_rel(p, root)}\n"
+                       + p.read_text(encoding="utf-8", errors="ignore")[:per_file])
+        except OSError:
+            continue
+    return "\n\n".join(out)
 
 
 def _insufficient_source_doc(title: str, summary: str, sections: list[str]) -> str:
@@ -425,21 +462,33 @@ def build_doc(root: pathlib.Path, *, kind: str, title: str, summary: str = "",
             # into invented/"truncated signature" claims.
             ctx = ("REPO FILES:\n" + _repo_tree(root) + "\n\nSOURCE:\n"
                    + _source_blob(root, max_files=25, per_file=8000))
+            intro = (
+                f'Write a Technical Specification for "{title}"'
+                + (f" — {summary}" if summary else "")
+                + " of THIS repository. Ground EVERY statement in the code below; "
+                  "never invent types or signatures that aren't present — if "
+                  "something isn't in the context, say so. Name real modules, "
+                  "types, and endpoints.\n\n")
+            rules = _DENSITY_RULES + _SPEC_RULES
         else:
             ctx = _read_docs(root)
+            ui = _ui_blob(root)
+            if ui:                                 # ground the wireframe, don't spec the code
+                ctx += ("\n\nUI / SURFACE FILES (to ground the wireframe — describe "
+                        "what the user SEES, not this code):\n" + ui)
             if not ctx.strip() and _source_coverage(root) == 0:
                 return _insufficient_source_doc(title, summary, sections)
-        prompt = (
-            f"Write a {_DOC_KIND_NAME[kind]} for "
-            f"\"{title}\"" + (f" — {summary}" if summary else "") +
-            " of THIS repository. Ground EVERY statement in the code/docs below; "
-            "never invent capabilities, types, or signatures that aren't present — "
-            "if something isn't in the context, say so rather than guess. Name real "
-            "modules, types, and endpoints.\n\n" + _DENSITY_RULES +
-            (_SPEC_FLOW_RULE if kind == "spec" else "") +
-            "\nStart with a single H1 title line, then EXACTLY these H2 sections, "
-            "in order:\n" + "\n".join(f"## {s}" for s in sections) +
-            "\n\nREPO CONTEXT:\n" + ctx)
+            intro = (
+                f'Write a Product Requirements Document for "{title}"'
+                + (f" — {summary}" if summary else "")
+                + " of THIS product. Ground the users, capabilities, and experience "
+                  "in the material below; don't invent capabilities it doesn't "
+                  "have.\n\n")
+            rules = _DENSITY_RULES + _PRD_RULES
+        prompt = (intro + rules
+                  + "\nStart with a single H1 title line, then EXACTLY these H2 "
+                    "sections, in order:\n" + "\n".join(f"## {s}" for s in sections)
+                  + "\n\nREPO CONTEXT:\n" + ctx)
         try:
             return _sanitize_doc_mermaid(_llm_text(prompt, model=model, max_tokens=4096))
         except Exception as e:                       # noqa: BLE001
