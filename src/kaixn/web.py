@@ -10,6 +10,7 @@ review — the full loop, end to end.
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 
@@ -88,6 +89,19 @@ def jobs():
     return _jobs
 
 
+_chat = None
+
+
+def chat_service():
+    """Process-wide PM-copilot chat service over the shared Kaixn engine."""
+    global _chat
+    if _chat is None:
+        from kaixn.agents import ChatService
+
+        _chat = ChatService(service())
+    return _chat
+
+
 # -- request models ----------------------------------------------------------
 class ConnectBody(BaseModel):
     repo_url: str
@@ -113,6 +127,13 @@ class ReviewBody(BaseModel):
 class PlaybookBody(BaseModel):
     repo_url: str
     llm: bool | None = None     # None → auto (on iff ANTHROPIC_API_KEY present)
+
+
+class ChatBody(BaseModel):
+    repo_url: str
+    message: str
+    session_id: str | None = None   # None → new session
+    persona: str | None = None      # persona slug; default generalist_pm
 
 
 # -- API ---------------------------------------------------------------------
@@ -238,6 +259,31 @@ def playbook_stream(body: PlaybookBody) -> StreamingResponse:
     job = jobs().start(repo, body.llm)
     return StreamingResponse(jobs().subscribe(job),
                              media_type="text/event-stream", headers=_SSE_HEADERS)
+
+
+# -- PM copilot chat ---------------------------------------------------------
+@app.post("/api/chat")
+def chat(body: ChatBody) -> StreamingResponse:
+    """One PM-copilot turn, streamed as SSE. Frames: `token` (answer deltas),
+    `step` (tool activity), then a terminal `done` carrying the answer, the
+    session id, any collision findings, and the proposal_id (if a conflict check
+    ran). Reuses the SSE pattern from the playbook job manager."""
+    if not body.message.strip():
+        raise HTTPException(status_code=400, detail="message is required")
+    try:
+        repo = playbook.normalize_repo_url(body.repo_url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    session = chat_service().session(repo, body.session_id, body.persona)
+
+    def _frames():
+        try:
+            for ev in session.stream(body.message):
+                yield f"event: {ev['type']}\ndata: {json.dumps(ev)}\n\n"
+        except Exception as e:  # noqa: BLE001 — surface to the client, end the stream
+            yield f"event: error\ndata: {json.dumps({'detail': str(e)[:300]})}\n\n"
+
+    return StreamingResponse(_frames(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
 # -- read the persisted knowledge (humans via /doc, agents via the API) -------
