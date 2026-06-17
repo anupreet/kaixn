@@ -268,7 +268,12 @@ async function removeRepo(repo) {
 // ---------- View an already-indexed repo (no regeneration) ----------
 async function viewRepo(repoEnc) {
   const repo = decodeURIComponent(repoEnc);
-  history.pushState({}, '', '/?repo=' + encodeURIComponent(repo));
+  // preserve a deep-linked doc (?kind&slug) so syncDocFromUrl can open the split;
+  // a bare repo nav (from the explore list) has none and just lands on the lists.
+  const cur = new URLSearchParams(location.search);
+  const k = cur.get('kind'), sl = cur.get('slug');
+  const suffix = (k && sl) ? `&kind=${k}&slug=${encodeURIComponent(sl)}` : '';
+  history.pushState({}, '', '/?repo=' + encodeURIComponent(repo) + suffix);
   $('out').innerHTML = `<div class="spin"><div class="dot"></div><span>loading ${esc(shortRepo(repo))}…</span></div>`;
   // if a generation job is currently running for this repo, attach to it live
   try {
