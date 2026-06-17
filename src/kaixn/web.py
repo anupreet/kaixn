@@ -14,7 +14,7 @@ import json
 import os
 import pathlib
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -29,7 +29,7 @@ try:
 except ImportError:
     pass
 
-from kaixn import playbook, waitlist
+from kaixn import auth, playbook, waitlist
 from kaixn.app import Kaixn
 
 _STATIC = pathlib.Path(__file__).parent / "static"
@@ -261,13 +261,90 @@ def playbook_stream(body: PlaybookBody) -> StreamingResponse:
                              media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
+# -- GitHub auth (gate before chat; flag-gated on the OAuth credentials) ------
+_SESSION_COOKIE = "kaixn_session"
+_STATE_COOKIE = "kaixn_oauth_state"
+
+
+def _public_base(request: Request) -> str:
+    """The externally-visible origin (behind the ALB we must trust X-Forwarded-*),
+    so the OAuth redirect_uri matches what's registered in the GitHub OAuth App."""
+    env = os.getenv("KAIXN_PUBLIC_URL")
+    if env:
+        return env.rstrip("/")
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    host = request.headers.get("host") or request.url.netloc
+    return f"{proto}://{host}"
+
+
+def _secure(request: Request) -> bool:
+    return (request.headers.get("x-forwarded-proto") or request.url.scheme) == "https"
+
+
+def _redirect_uri(request: Request) -> str:
+    return _public_base(request) + "/api/auth/github/callback"
+
+
+@app.get("/api/auth/me")
+def auth_me(request: Request) -> dict:
+    """Who's signed in. When auth is disabled (no OAuth creds), reports the app as
+    open so the UI shows the composer without a sign-in step."""
+    if not auth.auth_enabled():
+        return {"enabled": False, "authed": True}
+    sess = auth.read_session(request.cookies.get(_SESSION_COOKIE))
+    if not sess:
+        return {"enabled": True, "authed": False}
+    return {"enabled": True, "authed": True, "login": sess.get("login"),
+            "avatar": sess.get("avatar")}
+
+
+@app.get("/api/auth/github/login")
+def auth_login(request: Request) -> RedirectResponse:
+    if not auth.auth_enabled():
+        raise HTTPException(status_code=503, detail="GitHub auth is not configured")
+    state = auth.new_state()
+    resp = RedirectResponse(auth.authorize_url(_redirect_uri(request), state), status_code=302)
+    resp.set_cookie(_STATE_COOKIE, state, max_age=600, httponly=True,
+                    secure=_secure(request), samesite="lax", path="/")
+    return resp
+
+
+@app.get("/api/auth/github/callback")
+def auth_callback(request: Request, code: str = "", state: str = "") -> RedirectResponse:
+    if not auth.auth_enabled():
+        raise HTTPException(status_code=503, detail="GitHub auth is not configured")
+    home = _public_base(request) + "/"
+    if not code or not state or state != request.cookies.get(_STATE_COOKIE):
+        return RedirectResponse(home + "?auth=failed", status_code=302)
+    try:
+        user = auth.exchange_code(code, _redirect_uri(request))
+    except Exception:  # noqa: BLE001
+        return RedirectResponse(home + "?auth=failed", status_code=302)
+    resp = RedirectResponse(home + "?auth=ok", status_code=302)
+    resp.set_cookie(_SESSION_COOKIE, auth.make_session(user), max_age=7 * 86400,
+                    httponly=True, secure=_secure(request), samesite="lax", path="/")
+    resp.delete_cookie(_STATE_COOKIE, path="/")
+    return resp
+
+
+@app.post("/api/auth/logout")
+def auth_logout() -> Response:
+    resp = Response(status_code=204)
+    resp.delete_cookie(_SESSION_COOKIE, path="/")
+    return resp
+
+
 # -- PM copilot chat ---------------------------------------------------------
 @app.post("/api/chat")
-def chat(body: ChatBody) -> StreamingResponse:
+def chat(body: ChatBody, request: Request) -> StreamingResponse:
     """One PM-copilot turn, streamed as SSE. Frames: `token` (answer deltas),
     `step` (tool activity), then a terminal `done` carrying the answer, the
     session id, any collision findings, and the proposal_id (if a conflict check
-    ran). Reuses the SSE pattern from the playbook job manager."""
+    ran). Reuses the SSE pattern from the playbook job manager.
+
+    Gated: when GitHub auth is enabled, a valid session is required."""
+    if auth.auth_enabled() and not auth.read_session(request.cookies.get(_SESSION_COOKIE)):
+        raise HTTPException(status_code=401, detail="sign in with GitHub to chat")
     if not body.message.strip():
         raise HTTPException(status_code=400, detail="message is required")
     try:
