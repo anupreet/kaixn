@@ -49,6 +49,9 @@ aws cloudformation deploy \
       KaixnEmbedder="$EMBEDDER" \
       AnthropicApiKey="${ANTHROPIC_API_KEY:-}" \
       OpenAiApiKey="${OPENAI_API_KEY:-}" \
+      GithubClientId="${KAIXN_GITHUB_CLIENT_ID:-}" \
+      GithubClientSecret="${KAIXN_GITHUB_CLIENT_SECRET:-}" \
+      SessionSecret="${KAIXN_SESSION_SECRET:-}" \
       DBPassword="$DB_PASSWORD" \
       DomainName="${DOMAIN_NAME:-}" \
       WwwDomain="${WWW_DOMAIN:-}" \

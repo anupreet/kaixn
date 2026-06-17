@@ -82,6 +82,27 @@ Set as env vars before `deploy.sh`; the script maps them to CloudFormation param
 | `HOSTED_ZONE_ID` | `HostedZoneId` | "" | Route53 zone for the domains (required when `DOMAIN_NAME` is set). |
 | `AWS_REGION` | — | `us-east-1` | Region. |
 | `STACK` / `ECR_REPO` | — | `kaixn` | Stack and ECR repo names. |
+| `KAIXN_GITHUB_CLIENT_ID` | `GithubClientId` | "" | GitHub OAuth App client id. Blank = chat sign-in disabled (app open). |
+| `KAIXN_GITHUB_CLIENT_SECRET` | `GithubClientSecret` | "" | GitHub OAuth App client secret. |
+| `KAIXN_SESSION_SECRET` | `SessionSecret` | "" | Random key for signing chat session cookies. |
+
+## Enabling the PM-copilot sign-in (GitHub OAuth)
+
+The PM-copilot chat is open until you configure GitHub OAuth; once configured, a
+user must sign in with GitHub before chatting.
+
+1. Create a **GitHub OAuth App** (Settings → Developer settings → OAuth Apps):
+   - Homepage URL: `https://app.kaixn.com`
+   - Authorization callback URL: `https://app.kaixn.com/api/auth/github/callback`
+2. Add the credentials to `deploy/.secrets.local` (gitignored) — never commit them:
+   ```
+   KAIXN_GITHUB_CLIENT_ID=Iv1.xxxxxxxx
+   KAIXN_GITHUB_CLIENT_SECRET=your-client-secret
+   KAIXN_SESSION_SECRET=$(openssl rand -hex 32)
+   ```
+3. Re-run `./deploy/deploy.sh` (the values flow into the KMS-encrypted secret +
+   the task env). The sign-in gate turns on automatically; leaving them blank
+   turns it off.
 
 ## What you get
 

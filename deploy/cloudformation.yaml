@@ -22,6 +22,20 @@ Parameters:
     Default: ""
     NoEcho: true
     Description: Required only when KaixnEmbedder=openai.
+  GithubClientId:
+    Type: String
+    Default: ""
+    Description: GitHub OAuth App client id. Blank = chat auth disabled (app open).
+  GithubClientSecret:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: GitHub OAuth App client secret (enables the PM-copilot sign-in gate).
+  SessionSecret:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Random key used to sign chat session cookies (stable across deploys).
   DBUsername:
     Type: String
     Default: kaixn
@@ -193,7 +207,7 @@ Resources:
       Name: !Sub "${AWS::StackName}-secrets"
       KmsKeyId: !Ref SecretsKey
       SecretString: !Sub |
-        {"ANTHROPIC_API_KEY":"${AnthropicApiKey}","OPENAI_API_KEY":"${OpenAiApiKey}","DB_PASSWORD":"${DBPassword}"}
+        {"ANTHROPIC_API_KEY":"${AnthropicApiKey}","OPENAI_API_KEY":"${OpenAiApiKey}","DB_PASSWORD":"${DBPassword}","KAIXN_GITHUB_CLIENT_ID":"${GithubClientId}","KAIXN_GITHUB_CLIENT_SECRET":"${GithubClientSecret}","KAIXN_SESSION_SECRET":"${SessionSecret}"}
 
   # --- Logs ------------------------------------------------------------------
   LogGroup:
@@ -264,10 +278,16 @@ Resources:
             - { Name: DB_USER, Value: !Ref DBUsername }
             - { Name: DB_NAME, Value: kaixn }
             - { Name: PORT, Value: "8000" }
+            # public origin for the OAuth redirect_uri (matches the GitHub OAuth App)
+            - Name: KAIXN_PUBLIC_URL
+              Value: !If [HasDomain, !Sub "https://${DomainName}", ""]
           Secrets:
             - { Name: ANTHROPIC_API_KEY, ValueFrom: !Sub "${AppSecret}:ANTHROPIC_API_KEY::" }
             - { Name: OPENAI_API_KEY, ValueFrom: !Sub "${AppSecret}:OPENAI_API_KEY::" }
             - { Name: DB_PASSWORD, ValueFrom: !Sub "${AppSecret}:DB_PASSWORD::" }
+            - { Name: KAIXN_GITHUB_CLIENT_ID, ValueFrom: !Sub "${AppSecret}:KAIXN_GITHUB_CLIENT_ID::" }
+            - { Name: KAIXN_GITHUB_CLIENT_SECRET, ValueFrom: !Sub "${AppSecret}:KAIXN_GITHUB_CLIENT_SECRET::" }
+            - { Name: KAIXN_SESSION_SECRET, ValueFrom: !Sub "${AppSecret}:KAIXN_SESSION_SECRET::" }
           LogConfiguration:
             LogDriver: awslogs
             Options:
