@@ -12,9 +12,6 @@ Internet ─▶ ALB :443 (ACM cert) ─▶ Fargate task :8000 (kaixn web) ─▶
             host=kaixn.com/www ─▶ 301 webflow   └─ Secrets Manager (KMS CMK): ANTHROPIC / OPENAI / DB_PASSWORD
 ```
 
-For the full story of how this was built (decisions, gotchas, incidents), see
-[`SESSION-HISTORY.md`](SESSION-HISTORY.md).
-
 ## Prerequisites
 
 - AWS CLI v2, Docker running locally.
@@ -113,7 +110,7 @@ curl -sk -H "Host: www.kaixn.com" -o /dev/null -w "%{http_code} %{redirect_url}\
 
 > **Note:** a corporate SSL-inspecting proxy may block `*.kaixn.com` from a work
 > machine (returns a `403` block page that is *not* from AWS). Verify off-network or
-> via the ALB-hostname + `Host:` trick above. See SESSION-HISTORY.md §Gotchas.
+> via the ALB-hostname + `Host:` trick above.
 
 ## Notes & cost
 
